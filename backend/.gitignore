@@ -1,9 +1,0 @@
-__pycache__/
-*.pyc
-.env
-*.db
-faiss_index.bin
-faiss_ids.npy
-venv/
-.venv/
-*.egg-info/
