@@ -1,0 +1,16 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+alembic
+psycopg2-binary
+python-jose[cryptography]
+bcrypt
+email-validator
+pydantic-settings
+apscheduler
+python-multipart
+transformers
+sentence-transformers
+faiss-cpu
+scikit-learn
+torch
