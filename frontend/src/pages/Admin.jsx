@@ -16,6 +16,7 @@ const statusStyles = {
   in_progress: "bg-blue-100 text-blue-800",
   resolved: "bg-green-100 text-green-800",
   rejected: "bg-red-100 text-red-800",
+  reopened: "bg-orange-100 text-orange-800",
 };
 
 function StatusBadge({ status }) {
@@ -27,7 +28,7 @@ function StatusBadge({ status }) {
   );
 }
 
-const STATUS_OPTIONS = ["pending", "in_progress", "resolved", "rejected"];
+const STATUS_OPTIONS = ["pending", "in_progress", "reopened", "resolved", "rejected"];
 const PRIORITY_OPTIONS = [
   { label: "Critical (90–100)", value: "critical" },
   { label: "High (70–89.99)", value: "high" },
@@ -48,6 +49,7 @@ function Admin() {
   const [complaints, setComplaints] = useState([]);
   const [departments, setDepartments] = useState([]);
   const [staff, setStaff] = useState([]);
+  const [workload, setWorkload] = useState([]);
   const [assigningId, setAssigningId] = useState(null);
   const [assignmentError, setAssignmentError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
@@ -65,14 +67,16 @@ function Admin() {
       // GET /admin/complaints — all complaints, ComplaintOut schema,
       // already ordered by priority_score desc on the backend.
       // GET /admin/departments — [{ id, name, category }, ...]
-      const [complaintsRes, departmentsRes, staffRes] = await Promise.all([
+      const [complaintsRes, departmentsRes, staffRes, workloadRes] = await Promise.all([
         api.get("/admin/complaints"),
         api.get("/admin/departments"),
         api.get("/admin/staff"),
+        api.get("/admin/staff-workload"),
       ]);
       setComplaints(complaintsRes.data);
       setDepartments(departmentsRes.data);
       setStaff(staffRes.data);
+      setWorkload(workloadRes.data);
     } catch (err) {
       const detail = err.response?.data?.detail;
       setError(typeof detail === "string" ? detail : "Could not load complaints. Please try again.");
@@ -101,7 +105,7 @@ function Admin() {
   }
 
   useEffect(() => {
-    fetchData();
+    queueMicrotask(() => void fetchData());
   }, [fetchData]);
 
   const departmentNameById = useMemo(() => {
@@ -244,6 +248,22 @@ function Admin() {
         </div>
       )}
 
+      {!isLoading && !error && (
+        <div className="mb-4 rounded-lg bg-white p-4 shadow">
+          <h2 className="text-sm font-semibold text-slate-800">Staff Workload</h2>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            {[...workload].sort((a, b) => b.open_complaint_count - a.open_complaint_count).map((member) => (
+              <div key={member.staff_id} className="rounded-md border border-slate-200 p-3">
+                <p className="text-sm font-medium text-slate-800">{member.name}</p>
+                <p className="text-xs text-slate-500">{member.department || "No department"}</p>
+                <p className="mt-1 text-lg font-semibold text-orange-600">{member.open_complaint_count}</p>
+                <p className="text-[11px] text-slate-500">open complaints</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {!isLoading && !error && complaints.length > 0 && visibleComplaints.length === 0 && (
         <div className="bg-white rounded-lg shadow p-6 text-center">
           <p className="text-sm text-slate-500">No complaints match the selected filters.</p>
@@ -274,6 +294,14 @@ function Admin() {
                     {c.priority_score != null ? c.priority_score.toFixed(2) : "—"}
                   </td>
                   <td className="px-4 py-3">
+                    <StatusBadge status={c.status} />
+                  </td>
+                  <td className="px-4 py-3 text-slate-600">
+                    {c.department_id != null
+                      ? departmentNameById[c.department_id] || `Dept #${c.department_id}`
+                      : "Unassigned"}
+                  </td>
+                  <td className="px-4 py-3">
                     <select
                       aria-label={`Assign complaint ${c.id}`}
                       value={c.assigned_to ?? ""}
@@ -289,20 +317,12 @@ function Admin() {
                             Number(a.department_id === c.department_id)
                         )
                         .map((member) => (
-                        <option key={member.id} value={member.id}>
-                          {member.name}
-                          {member.department_id === c.department_id ? " (department)" : ""}
-                        </option>
+                          <option key={member.id} value={member.id}>
+                            {member.name}
+                            {member.department_id === c.department_id ? " (department)" : ""}
+                          </option>
                         ))}
                     </select>
-                  </td>
-                  <td className="px-4 py-3">
-                    <StatusBadge status={c.status} />
-                  </td>
-                  <td className="px-4 py-3 text-slate-600">
-                    {c.department_id != null
-                      ? departmentNameById[c.department_id] || `Dept #${c.department_id}`
-                      : "Unassigned"}
                   </td>
                   <td className="px-4 py-3 text-slate-500">{formatDate(c.created_at)}</td>
                   <td className="px-4 py-3 text-right">

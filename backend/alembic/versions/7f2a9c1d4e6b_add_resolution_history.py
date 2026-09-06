@@ -1,7 +1,7 @@
 """add resolution history
 
 Revision ID: 7f2a9c1d4e6b
-Revises: 1652eae1c885
+Revises: 4f3a6c2d1b09
 """
 
 from typing import Sequence, Union
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 
 revision: str = "7f2a9c1d4e6b"
-down_revision: Union[str, None] = "1652eae1c885"
+down_revision: Union[str, None] = "4f3a6c2d1b09"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

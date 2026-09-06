@@ -16,6 +16,7 @@ const statusStyles = {
   in_progress: "bg-blue-100 text-blue-800",
   resolved: "bg-green-100 text-green-800",
   rejected: "bg-red-100 text-red-800",
+  reopened: "bg-orange-100 text-orange-800",
 };
 
 function StatusBadge({ status }) {
@@ -27,7 +28,7 @@ function StatusBadge({ status }) {
   );
 }
 
-const STATUS_OPTIONS = ["pending", "in_progress", "resolved", "rejected"];
+const STATUS_OPTIONS = ["pending", "in_progress", "reopened", "resolved", "rejected"];
 const PRIORITY_OPTIONS = [
   { label: "Critical (90–100)", value: "critical" },
   { label: "High (70–89.99)", value: "high" },
@@ -69,7 +70,7 @@ function Staff() {
   }, []);
 
   useEffect(() => {
-    fetchAssigned();
+    queueMicrotask(() => void fetchAssigned());
   }, [fetchAssigned]);
 
   const filteredComplaints = useMemo(() => {

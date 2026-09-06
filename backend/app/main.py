@@ -1,9 +1,13 @@
 from contextlib import asynccontextmanager
+import logging
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import inspect, text
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import settings
 from app.core.database import Base, engine, SessionLocal
@@ -13,6 +17,7 @@ from app.services.escalation_service import run_escalation_check
 from app.ai.rag import load_resolution_index
 from app.ai.similarity import get_index
 
+logger = logging.getLogger(__name__)
 scheduler = BackgroundScheduler()
 
 
@@ -24,28 +29,12 @@ def _scheduled_escalation_job():
         db.close()
 
 
-def _ensure_compatibility_schema():
-    """Add non-destructive columns for databases created before new model fields."""
-    inspector = inspect(engine)
-    columns = {column["name"] for column in inspector.get_columns("complaints")}
-    if "issue_root_id" not in columns:
-        with engine.begin() as connection:
-            connection.execute(
-                text(
-                    "ALTER TABLE complaints ADD COLUMN issue_root_id INTEGER "
-                    "REFERENCES complaints(id)"
-                )
-            )
-            connection.execute(
-                text("UPDATE complaints SET issue_root_id = id WHERE issue_root_id IS NULL")
-            )
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    Base.metadata.create_all(bind=engine)
-    _ensure_compatibility_schema()
+    # Fresh local demos can create an empty schema. Production deployments
+    # must run `alembic upgrade head` explicitly before starting the API.
+    if settings.AUTO_CREATE_SCHEMA:
+        Base.metadata.create_all(bind=engine)
     get_index()
     load_resolution_index()
     scheduler.add_job(
@@ -53,6 +42,7 @@ async def lifespan(app: FastAPI):
         "interval",
         minutes=settings.ESCALATION_CHECK_INTERVAL_MINUTES,
         id="escalation_check",
+        replace_existing=True,
     )
     scheduler.start()
     yield
@@ -62,15 +52,39 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Complaint Prioritization & Escalation System", lifespan=lifespan)
 
-# Allow the React frontend (Vite dev server, typically localhost:5173) to call this API.
-# Wide open for local dev/demo purposes; tighten allow_origins before any real deployment.
+@app.exception_handler(RequestValidationError)
+async def request_validation_handler(request: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": "Request validation failed",
+            "errors": jsonable_encoder(exc.errors()),
+        },
+    )
+
+
+@app.exception_handler(SQLAlchemyError)
+async def database_error_handler(request: Request, exc: SQLAlchemyError):
+    logger.exception("Database error while handling %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=500, content={"detail": "A database error occurred"})
+
+
+@app.exception_handler(Exception)
+async def unhandled_error_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled error while handling %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+
+
+# Localhost regex is intentionally disabled in production; production origins
+# must be explicitly listed in CORS_ORIGINS.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
-    # Vite may move to the next available port when another dev server is
-    # already running. Keep local development working without weakening
-    # production origins configured through CORS_ORIGINS.
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_origin_regex=(
+        r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
+        if settings.ENVIRONMENT != "production"
+        else None
+    ),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

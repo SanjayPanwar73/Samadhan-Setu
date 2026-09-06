@@ -37,7 +37,7 @@ def compute_priority(
     people_affected: int,
     age_days: float,
     repeat_count: int,
-) -> float:
+) -> dict:
     """
     severity: 0.0-1.0, typically derived from sentiment negativity/confidence
     people_affected: raw count
@@ -46,10 +46,28 @@ def compute_priority(
     """
     severity = max(0.0, min(severity, 1.0))
 
-    score = (
-        WEIGHTS["severity"] * severity
-        + WEIGHTS["people_affected"] * _normalize_people_affected(people_affected)
-        + WEIGHTS["age_days"] * _normalize_age(age_days)
-        + WEIGHTS["repeat_count"] * _normalize_repeat(repeat_count)
-    )
-    return round(score * 100, 2)
+    normalized_values = {
+        "severity": severity,
+        "people_affected": _normalize_people_affected(people_affected),
+        "age_days": _normalize_age(age_days),
+        "repeat_count": _normalize_repeat(repeat_count),
+    }
+    raw_values = {
+        "severity": severity,
+        "people_affected": people_affected,
+        "age_days": age_days,
+        "repeat_count": repeat_count,
+    }
+    components = [
+        {
+            "name": name,
+            "raw_value": raw_values[name],
+            "weight": weight,
+            "contribution": round(weight * normalized_values[name] * 100, 2),
+        }
+        for name, weight in WEIGHTS.items()
+    ]
+    return {
+        "final_score": round(sum(item["contribution"] for item in components), 2),
+        "components": components,
+    }

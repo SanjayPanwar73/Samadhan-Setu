@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.ai.classifier import classify_complaint
@@ -32,6 +33,27 @@ def _count_similar(complaint_id: int, similar_results: list[tuple[int, float]], 
 def _assign_department(db: Session, category: str) -> int | None:
     dept = db.query(Department).filter(Department.category.ilike(f"%{category}%")).first()
     return dept.id if dept else None
+
+
+def get_least_loaded_staff(department_id: int, db: Session) -> int | None:
+    open_statuses = ("pending", "in_progress", "reopened")
+    staff_members = (
+        db.query(User)
+        .filter(User.role == UserRole.staff, User.department_id == department_id)
+        .all()
+    )
+    if not staff_members:
+        return None
+    counts = dict(
+        db.query(Complaint.assigned_to, func.count(Complaint.id))
+        .filter(
+            Complaint.assigned_to.in_([member.id for member in staff_members]),
+            Complaint.status.in_(open_statuses),
+        )
+        .group_by(Complaint.assigned_to)
+        .all()
+    )
+    return min(staff_members, key=lambda member: (counts.get(member.id, 0), member.id)).id
 
 
 def create_complaint(db: Session, payload: ComplaintCreate, user_id: int) -> Complaint:
@@ -83,7 +105,7 @@ def create_complaint(db: Session, payload: ComplaintCreate, user_id: int) -> Com
     # 5. Priority score
     age_days = 0.0  # brand new complaint
     severity = _severity_from_sentiment(sentiment)
-    priority_score = compute_priority(
+    priority_breakdown = compute_priority(
         severity=severity,
         people_affected=payload.people_affected,
         age_days=age_days,
@@ -93,20 +115,14 @@ def create_complaint(db: Session, payload: ComplaintCreate, user_id: int) -> Com
     # 6. Department auto-assign
     department_id = _assign_department(db, category)
     if department_id is not None:
-        assigned_staff = (
-            db.query(User)
-            .filter(User.role == UserRole.staff)
-            .order_by(User.id)
-            .first()
-        )
-        if assigned_staff:
-            complaint.assigned_to = assigned_staff.id
+        complaint.assigned_to = get_least_loaded_staff(department_id, db)
 
     # 7. Update the row with everything the AI produced
     complaint.category = category
     complaint.sentiment_label = sentiment["label"]
     complaint.sentiment_score = sentiment["score"]
-    complaint.priority_score = priority_score
+    complaint.priority_score = priority_breakdown["final_score"]
+    complaint.priority_breakdown = priority_breakdown
     complaint.repeat_count = repeat_count
     complaint.department_id = department_id
     db.commit()
@@ -116,7 +132,7 @@ def create_complaint(db: Session, payload: ComplaintCreate, user_id: int) -> Com
         ComplaintHistory(
             complaint_id=complaint.id,
             action="created_and_classified",
-            detail=f"category={category}, priority={priority_score}, dept={department_id}",
+            detail=f"category={category}, priority={priority_breakdown['final_score']}, dept={department_id}",
             actor_id=user_id,
         )
     )

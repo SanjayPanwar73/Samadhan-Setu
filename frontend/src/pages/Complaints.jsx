@@ -18,6 +18,7 @@ const statusStyles = {
   in_progress: "bg-blue-100 text-blue-800",
   resolved: "bg-green-100 text-green-800",
   rejected: "bg-red-100 text-red-800",
+  reopened: "bg-orange-100 text-orange-800",
 };
 
 function StatusBadge({ status }) {
@@ -53,7 +54,7 @@ function Complaints() {
   }, []);
 
   useEffect(() => {
-    fetchComplaints();
+    queueMicrotask(() => void fetchComplaints());
   }, [fetchComplaints]);
 
   return (
@@ -74,6 +75,7 @@ function Complaints() {
           ["Pending", complaints.filter((c) => c.status === "pending").length, "bg-amber-50 text-amber-700"],
           ["In progress", complaints.filter((c) => c.status === "in_progress").length, "bg-sky-50 text-sky-700"],
           ["Resolved", complaints.filter((c) => c.status === "resolved").length, "bg-emerald-50 text-emerald-700"],
+          ["Reopened", complaints.filter((c) => c.status === "reopened").length, "bg-orange-50 text-orange-700"],
         ].map(([label, value, classes]) => (
           <div key={label} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className={`mb-3 inline-flex rounded-lg px-2 py-1 text-xs font-semibold ${classes}`}>{label}</div>
@@ -153,6 +155,9 @@ function Complaints() {
                     </td>
                     <td className="px-4 py-3">
                       <StatusBadge status={c.status} />
+                      {c.status === "reopened" && (
+                        <p className="mt-1 text-[11px] text-orange-700">Reopened due to your feedback</p>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-slate-500">{formatDate(c.created_at)}</td>
                     <td className="px-4 py-3 text-right">

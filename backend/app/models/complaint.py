@@ -1,6 +1,6 @@
 import enum
 
-from sqlalchemy import Column, Integer, String, Text, Float, Enum, DateTime, ForeignKey, func
+from sqlalchemy import Column, Integer, String, Text, Float, Enum, DateTime, ForeignKey, JSON, func
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
@@ -11,6 +11,7 @@ class ComplaintStatus(str, enum.Enum):
     in_progress = "in_progress"
     resolved = "resolved"
     rejected = "rejected"
+    reopened = "reopened"
 
 
 class Complaint(Base):
@@ -23,10 +24,11 @@ class Complaint(Base):
     # --- Filled in by AI after creation (nullable at insert time) ---
     category = Column(String, nullable=True)
     priority_score = Column(Float, nullable=True)
+    priority_breakdown = Column(JSON, nullable=True)
     sentiment_label = Column(String, nullable=True)
     sentiment_score = Column(Float, nullable=True)
 
-    status = Column(Enum(ComplaintStatus), default=ComplaintStatus.pending, nullable=False)
+    status = Column(Enum(ComplaintStatus, values_callable=lambda enum: [item.value for item in enum]), default=ComplaintStatus.pending, nullable=False)
 
     department_id = Column(Integer, ForeignKey("departments.id"), nullable=True)
     created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
@@ -37,7 +39,8 @@ class Complaint(Base):
     repeat_count = Column(Integer, default=1)
 
     sla_deadline = Column(DateTime(timezone=True), nullable=True)
-    escalation_level = Column(Integer, default=0)
+    escalation_level = Column(Integer, default=0, nullable=False)
+    last_escalated_at = Column(DateTime(timezone=True), nullable=True, index=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

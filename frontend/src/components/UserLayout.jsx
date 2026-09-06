@@ -1,5 +1,7 @@
+import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { getDisplayName, getHomeRouteForRole, getRole, logout } from "../utils/auth";
+import api from "../services/api";
 
 const navLinkClasses = ({ isActive }) =>
   `group flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors ${
@@ -12,6 +14,7 @@ function UserLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const role = getRole();
+  const [user, setUser] = useState(null);
   const homeRoute = getHomeRouteForRole(role);
   const pageTitle = location.pathname === "/profile"
     ? "Profile"
@@ -26,7 +29,23 @@ function UserLayout() {
             : role === "management"
               ? "Management Dashboard"
               : "My Complaints";
-  const displayName = getDisplayName({ email: `${role || "user"}@samadhan-setu` });
+  const displayName = user ? getDisplayName(user) : role || "User";
+
+  useEffect(() => {
+    let active = true;
+    api
+      .get("/auth/me")
+      .then((response) => {
+        if (active) setUser(response.data);
+      })
+      .catch(() => {
+        // The interceptor handles expired tokens; keep the shell usable for
+        // transient profile failures with the role from the JWT.
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   function handleLogout() {
     logout();
@@ -69,6 +88,7 @@ function UserLayout() {
             <span aria-hidden="true">◉</span><span>Profile</span>
           </NavLink>
           <button
+            type="button"
             onClick={handleLogout}
             className="whitespace-nowrap rounded-xl px-3 py-2.5 text-left text-sm font-semibold text-red-600 hover:bg-red-50 md:hidden"
           >
@@ -82,6 +102,7 @@ function UserLayout() {
             <p className="mt-0.5 text-xs capitalize text-slate-400">{role || "user"} account</p>
           </div>
           <button
+            type="button"
             onClick={handleLogout}
             className="w-full rounded-xl px-3 py-2.5 text-left text-sm font-semibold text-red-600 hover:bg-red-50"
           >
@@ -97,7 +118,6 @@ function UserLayout() {
             <h2 className="text-lg font-bold text-slate-900">{pageTitle}</h2>
           </div>
           <div className="flex items-center gap-3">
-            <NavLink to="/notifications" aria-label="Notifications" className="rounded-xl border border-slate-200 px-3 py-2 text-slate-500 hover:bg-slate-50">◌</NavLink>
             <div className="hidden text-right sm:block">
               <p className="text-sm font-semibold capitalize text-slate-800">{role || "User"}</p>
               <p className="text-xs text-slate-400">Samadhan Setu</p>
@@ -108,12 +128,16 @@ function UserLayout() {
           </div>
         </header>
         <main className="min-w-0 overflow-x-hidden p-4 sm:p-6 lg:p-8">
-          {location.pathname !== homeRoute && (
-            <button onClick={() => navigate(homeRoute)} className="mb-5 text-xs font-semibold text-slate-400 hover:text-brand-600">
-              ← Back to dashboard
-            </button>
-          )}
-          <Outlet />
+        {location.pathname !== homeRoute && (
+          <button
+            type="button"
+            onClick={() => navigate(homeRoute)}
+            className="mb-5 text-xs font-semibold text-slate-400 hover:text-brand-600"
+          >
+            ← Back to dashboard
+          </button>
+        )}
+        <Outlet />
         </main>
       </div>
     </div>
