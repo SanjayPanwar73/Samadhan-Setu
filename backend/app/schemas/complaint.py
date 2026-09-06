@@ -13,6 +13,8 @@ class ComplaintCreate(BaseModel):
 
 class ComplaintStatusUpdate(BaseModel):
     status: ComplaintStatus
+    resolution_text: str | None = None
+    remarks: str | None = None
 
 
 class ComplaintOut(BaseModel):

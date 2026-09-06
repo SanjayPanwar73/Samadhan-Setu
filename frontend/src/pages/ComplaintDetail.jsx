@@ -84,6 +84,10 @@ function ComplaintDetail() {
   const [updatingStatus, setUpdatingStatus] = useState(null); // which status is being submitted, or null
   const [updateError, setUpdateError] = useState("");
   const [updateSuccess, setUpdateSuccess] = useState("");
+  const [resolutionText, setResolutionText] = useState("");
+  const [suggestion, setSuggestion] = useState(null);
+  const [suggestionLoading, setSuggestionLoading] = useState(false);
+  const [suggestionError, setSuggestionError] = useState("");
 
   // Admin override panel state
   const [departments, setDepartments] = useState([]);
@@ -139,6 +143,20 @@ function ComplaintDetail() {
       });
   }, [isAdmin]);
 
+  useEffect(() => {
+    if (!canUpdateStatus || !isValidId) return;
+    setSuggestionLoading(true);
+    setSuggestionError("");
+    api
+      .get(`/complaints/${id}/suggested-resolution`)
+      .then((response) => setSuggestion(response.data))
+      .catch((err) => {
+        const detail = err.response?.data?.detail;
+        setSuggestionError(typeof detail === "string" ? detail : "Could not load suggestions.");
+      })
+      .finally(() => setSuggestionLoading(false));
+  }, [canUpdateStatus, id, isValidId]);
+
   // Pre-fill the override form with the complaint's current values once loaded.
   useEffect(() => {
     if (!complaint) return;
@@ -152,10 +170,13 @@ function ComplaintDetail() {
     setUpdatingStatus(newStatus);
 
     try {
-      // Matches ComplaintStatusUpdate exactly: { status }. No remarks
-      // field exists on this endpoint's schema, so none is sent.
-      await api.patch(`/complaints/${id}/status`, { status: newStatus });
+      const payload = { status: newStatus };
+      if (newStatus === "resolved" && resolutionText.trim()) {
+        payload.resolution_text = resolutionText.trim();
+      }
+      await api.patch(`/complaints/${id}/status`, payload);
       setUpdateSuccess(`Status updated to "${newStatus.replace("_", " ")}".`);
+      if (newStatus === "resolved") setResolutionText("");
       // Refresh so the page reflects the backend's actual current state
       // (and the new set of valid next transitions) rather than assuming.
       await fetchComplaint();
@@ -418,6 +439,21 @@ function ComplaintDetail() {
             Current status: <span className="font-medium capitalize">{complaint.status.replace("_", " ")}</span>
           </p>
 
+          {VALID_TRANSITIONS[complaint.status]?.includes("resolved") && (
+            <label className="block mb-4">
+              <span className="block text-xs font-medium text-slate-700 mb-1">
+                Resolution note (optional)
+              </span>
+              <textarea
+                value={resolutionText}
+                onChange={(event) => setResolutionText(event.target.value)}
+                rows={3}
+                placeholder="Describe the action taken to resolve this complaint..."
+                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+              />
+            </label>
+          )}
+
           {(VALID_TRANSITIONS[complaint.status] || []).length === 0 ? (
             <p className="text-sm text-slate-500">
               This complaint is in a final state — no further transitions are allowed.
@@ -436,6 +472,43 @@ function ComplaintDetail() {
                     : STATUS_ACTION_LABELS[nextStatus] || nextStatus}
                 </button>
               ))}
+            </div>
+          )}
+
+          {canUpdateStatus && (
+            <div className="bg-violet-50 border border-violet-100 rounded-lg p-6">
+              <h2 className="text-sm font-semibold text-violet-900">Suggested Resolution</h2>
+              <p className="mt-1 text-xs text-violet-800/80">
+                Advisory guidance based on similar resolved complaints. Review before acting.
+              </p>
+              {suggestionLoading && <p className="mt-4 text-sm text-slate-500">Loading suggestions...</p>}
+              {suggestionError && <p className="mt-4 text-sm text-red-600">{suggestionError}</p>}
+              {!suggestionLoading && !suggestionError && suggestion?.retrieved_cases?.length === 0 && (
+                <p className="mt-4 text-sm text-slate-600">Not enough resolved history yet.</p>
+              )}
+              {!suggestionLoading && !suggestionError && suggestion?.retrieved_cases?.length > 0 && (
+                <div className="mt-4 space-y-3">
+                  {suggestion.generated && suggestion.suggested_action && (
+                    <div className="rounded-md border border-violet-200 bg-white p-3">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-violet-700">
+                        AI-generated, advisory only
+                      </p>
+                      <p className="mt-1 text-sm text-slate-700 whitespace-pre-wrap">
+                        {suggestion.suggested_action}
+                      </p>
+                    </div>
+                  )}
+                  {suggestion.retrieved_cases.map((item) => (
+                    <div key={`${item.complaint_id}-${item.similarity}`} className="rounded-md bg-white p-3">
+                      <div className="flex justify-between gap-3 text-xs text-slate-500">
+                        <span>Past complaint #{item.complaint_id}</span>
+                        <span>Similarity {(item.similarity * 100).toFixed(0)}%</span>
+                      </div>
+                      <p className="mt-1 text-sm text-slate-700">{item.resolution_text}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 

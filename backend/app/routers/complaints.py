@@ -15,6 +15,7 @@ from app.schemas.complaint import (
     ComplaintOverride,
 )
 from app.services.complaint_service import create_complaint, update_status
+from app.ai.rag import generate_suggestion, retrieve_similar_resolutions
 
 router = APIRouter(prefix="/complaints", tags=["complaints"])
 
@@ -98,7 +99,35 @@ def patch_status(
             detail=f"Invalid status transition: {current} -> {new_status}",
         )
 
-    return update_status(db, complaint, payload.status, current_user.id)
+    resolution_text = payload.resolution_text or payload.remarks
+    return update_status(db, complaint, payload.status, current_user.id, resolution_text)
+
+
+@router.get("/{complaint_id}/suggested-resolution")
+def suggested_resolution(
+    complaint_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("staff", "admin")),
+):
+    complaint = db.query(Complaint).filter(Complaint.id == complaint_id).first()
+    if not complaint:
+        raise HTTPException(status_code=404, detail="Complaint not found")
+
+    retrieved = retrieve_similar_resolutions(
+        f"{complaint.title}. {complaint.description}"
+    )
+    retrieved = [
+        result for result in retrieved if result["complaint_id"] != complaint.id
+    ]
+    suggested_action = generate_suggestion(
+        f"{complaint.title}. {complaint.description}", retrieved
+    ) if retrieved else None
+    return {
+        "complaint_id": complaint.id,
+        "retrieved_cases": retrieved,
+        "suggested_action": suggested_action,
+        "generated": suggested_action is not None,
+    }
 
 
 @router.patch("/{complaint_id}/override", response_model=ComplaintOut)

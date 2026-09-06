@@ -75,10 +75,25 @@ app/
 ├── schemas/          # Pydantic request/response contracts
 ├── routers/           # auth, complaints, admin, management endpoints
 ├── services/           # business logic (complaint pipeline, escalation)
-└── ai/                  # classifier, similarity, sentiment, priority
+└── ai/                  # classifier, similarity, sentiment, priority, RAG
 scripts/
 ├── seed.py            # populate sample data
-└── evaluate.py         # AI evaluation metrics
+├── evaluate.py         # AI evaluation metrics
+├── backfill_resolution_index.py
+└── evaluate_rag.py     # qualitative RAG retrieval evaluation
+```
+
+### Resolution suggestions
+
+Staff and admins can call `GET /complaints/{id}/suggested-resolution` after
+resolved complaints have been recorded with a resolution note. Retrieval-only
+mode works without any external service. If local Ollama is running at
+`http://localhost:11434` with the `phi3` model, the endpoint also returns an
+advisory generated suggestion; otherwise `generated` is `false`.
+
+```bash
+python -m scripts.backfill_resolution_index
+python -m scripts.evaluate_rag
 ```
 
 ## Manually testing the escalation job

@@ -5,21 +5,15 @@ app restarts, and rebuilt/loaded at startup.
 """
 
 import os
-from functools import lru_cache
 
 import numpy as np
+
+from app.ai.embeddings import get_embedding_model
 
 INDEX_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "faiss_index.bin")
 ID_MAP_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "faiss_ids.npy")
 
 EMBED_DIM = 384  # all-MiniLM-L6-v2 output dimension
-
-
-@lru_cache(maxsize=1)
-def _get_embedder():
-    from sentence_transformers import SentenceTransformer
-
-    return SentenceTransformer("all-MiniLM-L6-v2")
 
 
 class SimilarityIndex:
@@ -37,7 +31,7 @@ class SimilarityIndex:
             self.ids = []
 
     def add(self, complaint_id: int, text: str):
-        embedder = _get_embedder()
+        embedder = get_embedding_model()
         vector = embedder.encode([text]).astype("float32")
         self.index.add(vector)
         self.ids.append(complaint_id)
@@ -46,7 +40,7 @@ class SimilarityIndex:
     def search(self, text: str, top_k: int = 5) -> list[tuple[int, float]]:
         if self.index.ntotal == 0:
             return []
-        embedder = _get_embedder()
+        embedder = get_embedding_model()
         vector = embedder.encode([text]).astype("float32")
         distances, indices = self.index.search(vector, min(top_k, self.index.ntotal))
         results = []

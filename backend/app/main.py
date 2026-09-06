@@ -10,6 +10,8 @@ from app.core.database import Base, engine, SessionLocal
 from app.routers import auth, complaints, admin, management, notifications
 import app.models  # noqa: F401  (ensures all models are registered on Base)
 from app.services.escalation_service import run_escalation_check
+from app.ai.rag import load_resolution_index
+from app.ai.similarity import get_index
 
 scheduler = BackgroundScheduler()
 
@@ -44,6 +46,8 @@ async def lifespan(app: FastAPI):
     # Startup
     Base.metadata.create_all(bind=engine)
     _ensure_compatibility_schema()
+    get_index()
+    load_resolution_index()
     scheduler.add_job(
         _scheduled_escalation_job,
         "interval",

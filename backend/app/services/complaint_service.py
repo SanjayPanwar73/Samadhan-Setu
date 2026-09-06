@@ -11,6 +11,7 @@ from app.models.complaint import Complaint
 from app.models.department import Department
 from app.models.user import User, UserRole
 from app.models.complaint_history import ComplaintHistory
+from app.models.resolution_history import ResolutionHistory
 from app.schemas.complaint import ComplaintCreate
 
 
@@ -124,11 +125,30 @@ def create_complaint(db: Session, payload: ComplaintCreate, user_id: int) -> Com
     return complaint
 
 
-def update_status(db: Session, complaint: Complaint, new_status: str, actor_id: int) -> Complaint:
+def update_status(
+    db: Session,
+    complaint: Complaint,
+    new_status: str,
+    actor_id: int,
+    resolution_text: str | None = None,
+) -> Complaint:
     old_status = complaint.status
     complaint.status = new_status
     db.commit()
     db.refresh(complaint)
+
+    if new_status == "resolved" and resolution_text and resolution_text.strip():
+        resolution = ResolutionHistory(
+            complaint_id=complaint.id,
+            resolution_text=resolution_text.strip(),
+            resolved_by=actor_id,
+        )
+        db.add(resolution)
+        db.commit()
+        db.refresh(resolution)
+        from app.ai.rag import add_resolution_to_index, embed_resolution
+
+        add_resolution_to_index(resolution.id, embed_resolution(resolution.resolution_text))
 
     db.add(
         ComplaintHistory(
