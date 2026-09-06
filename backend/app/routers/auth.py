@@ -1,9 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.security import hash_password, verify_password, create_access_token
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.schemas.auth import UserRegister, UserLogin, UserOut, Token
 from app.deps import get_current_user
 
@@ -20,7 +21,8 @@ def register(payload: UserRegister, db: Session = Depends(get_db)):
         name=payload.name,
         email=payload.email,
         hashed_password=hash_password(payload.password),
-        role="user",
+        # Public registration has no role input; the server owns this decision.
+        role=UserRole.user,
     )
     db.add(user)
     db.commit()
@@ -30,8 +32,12 @@ def register(payload: UserRegister, db: Session = Depends(get_db)):
 
 @router.post("/login", response_model=Token)
 def login(payload: UserLogin, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == payload.email).first()
-    if not user or not verify_password(payload.password, user.hashed_password):
+    return _authenticate(payload.email, payload.password, db)
+
+
+def _authenticate(email: str, password: str, db: Session) -> Token:
+    user = db.query(User).filter(User.email == email).first()
+    if not user or not verify_password(password, user.hashed_password):
         raise HTTPException(
             status_code=401,
             detail="Incorrect email or password",
@@ -39,7 +45,16 @@ def login(payload: UserLogin, db: Session = Depends(get_db)):
         )
 
     token = create_access_token(data={"sub": str(user.id), "role": user.role.value})
-    return Token(access_token=token, role=user.role)
+    return Token(access_token=token, role=user.role, user=user)
+
+
+@router.post("/token", response_model=Token)
+def swagger_login(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db),
+):
+    """OAuth2 form-compatible login endpoint used by Swagger Authorize."""
+    return _authenticate(form_data.username, form_data.password, db)
 
 
 @router.get("/me", response_model=UserOut)

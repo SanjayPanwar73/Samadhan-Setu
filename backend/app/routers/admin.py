@@ -3,11 +3,13 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.security import hash_password
 from app.deps import require_role
 from app.models.complaint import Complaint, ComplaintStatus
 from app.models.complaint_history import ComplaintHistory
 from app.models.department import Department
 from app.models.user import User, UserRole
+from app.schemas.auth import ManagedUserCreate, UserOut
 from app.schemas.complaint import ComplaintAssignment, ComplaintOut
 from app.services.escalation_service import run_escalation_check
 from sqlalchemy import func
@@ -41,6 +43,59 @@ class DepartmentUpdate(BaseModel):
         if not value:
             raise ValueError("Value must not be blank")
         return value
+
+
+def _create_managed_user(
+    payload: ManagedUserCreate,
+    role: UserRole,
+    db: Session,
+) -> User:
+    if db.query(User).filter(User.email == payload.email).first():
+        raise HTTPException(status_code=409, detail="Email already registered")
+
+    if payload.department_id is not None:
+        department = db.query(Department).filter(Department.id == payload.department_id).first()
+        if department is None:
+            raise HTTPException(status_code=400, detail="Department not found")
+
+    user = User(
+        name=payload.name,
+        email=payload.email,
+        hashed_password=hash_password(payload.password),
+        role=role,
+        department_id=payload.department_id,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@router.post("/staff", response_model=UserOut, status_code=status.HTTP_201_CREATED)
+def create_staff(payload: ManagedUserCreate, db: Session = Depends(get_db)):
+    return _create_managed_user(payload, UserRole.staff, db)
+
+
+@router.post("/management", response_model=UserOut, status_code=status.HTTP_201_CREATED)
+def create_management(payload: ManagedUserCreate, db: Session = Depends(get_db)):
+    # The role is selected by this protected endpoint, never by the client.
+    return _create_managed_user(payload, UserRole.management, db)
+
+
+@router.get("/management", response_model=list[UserOut])
+def list_management(
+    offset: int = Query(default=0, ge=0, le=100_000),
+    limit: int = Query(default=100, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    return (
+        db.query(User)
+        .filter(User.role == UserRole.management)
+        .order_by(User.name)
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
 
 
 @router.get("/staff")
