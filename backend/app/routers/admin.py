@@ -1,35 +1,60 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.deps import require_role
-from app.models.complaint import Complaint
+from app.models.complaint import Complaint, ComplaintStatus
 from app.models.complaint_history import ComplaintHistory
 from app.models.department import Department
 from app.models.user import User, UserRole
 from app.schemas.complaint import ComplaintAssignment, ComplaintOut
 from app.services.escalation_service import run_escalation_check
+from sqlalchemy import func
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_role("admin"))])
 
 
 class DepartmentCreate(BaseModel):
-    name: str
-    category: str
+    name: str = Field(min_length=1, max_length=120)
+    category: str = Field(min_length=1, max_length=500)
+
+    @field_validator("name", "category")
+    @classmethod
+    def trim_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Value must not be blank")
+        return value
 
 
 class DepartmentUpdate(BaseModel):
-    name: str | None = None
-    category: str | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    category: str | None = Field(default=None, min_length=1, max_length=500)
+
+    @field_validator("name", "category")
+    @classmethod
+    def trim_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        value = value.strip()
+        if not value:
+            raise ValueError("Value must not be blank")
+        return value
 
 
 @router.get("/staff")
-def list_staff(db: Session = Depends(get_db)):
+def list_staff(
+    offset: int = Query(default=0, ge=0, le=100_000),
+    limit: int = Query(default=100, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
     staff = (
         db.query(User)
         .filter(User.role == UserRole.staff)
         .order_by(User.name)
+        .offset(offset)
+        .limit(limit)
         .all()
     )
     return [
@@ -38,6 +63,39 @@ def list_staff(db: Session = Depends(get_db)):
             "name": member.name,
             "email": member.email,
             "department_id": member.department_id,
+        }
+        for member in staff
+    ]
+
+
+@router.get("/staff-workload")
+def staff_workload(
+    offset: int = Query(default=0, ge=0, le=100_000),
+    limit: int = Query(default=100, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    open_statuses = [ComplaintStatus.pending, ComplaintStatus.in_progress, ComplaintStatus.reopened]
+    staff = (
+        db.query(User)
+        .filter(User.role == UserRole.staff)
+        .order_by(User.name)
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    counts = dict(
+        db.query(Complaint.assigned_to, func.count(Complaint.id))
+        .filter(Complaint.status.in_(open_statuses))
+        .group_by(Complaint.assigned_to)
+        .all()
+    )
+    departments = {department.id: department.name for department in db.query(Department).all()}
+    return [
+        {
+            "staff_id": member.id,
+            "name": member.name,
+            "department": departments.get(member.department_id),
+            "open_complaint_count": counts.get(member.id, 0),
         }
         for member in staff
     ]
@@ -81,20 +139,32 @@ def assign_complaint(
 
 
 @router.get("/complaints", response_model=list[ComplaintOut])
-def list_complaints(db: Session = Depends(get_db)):
+def list_complaints(
+    offset: int = Query(default=0, ge=0, le=100_000),
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
     return (
         db.query(Complaint)
         .order_by(Complaint.priority_score.desc(), Complaint.created_at.desc())
+        .offset(offset)
+        .limit(limit)
         .all()
     )
 
 
 @router.get("/escalations", response_model=list[ComplaintOut])
-def list_escalated(db: Session = Depends(get_db)):
+def list_escalated(
+    offset: int = Query(default=0, ge=0, le=100_000),
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
     return (
         db.query(Complaint)
         .filter(Complaint.escalation_level > 0)
         .order_by(Complaint.escalation_level.desc())
+        .offset(offset)
+        .limit(limit)
         .all()
     )
 
@@ -107,8 +177,18 @@ def trigger_escalation_check(db: Session = Depends(get_db)):
 
 
 @router.get("/departments")
-def list_departments(db: Session = Depends(get_db)):
-    return db.query(Department).order_by(Department.name).all()
+def list_departments(
+    offset: int = Query(default=0, ge=0, le=100_000),
+    limit: int = Query(default=100, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    return (
+        db.query(Department)
+        .order_by(Department.name)
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
 
 
 @router.post("/departments", status_code=status.HTTP_201_CREATED)

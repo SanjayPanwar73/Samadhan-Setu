@@ -42,7 +42,7 @@ function Departments() {
   }, []);
 
   useEffect(() => {
-    fetchDepartments();
+    queueMicrotask(() => void fetchDepartments());
   }, [fetchDepartments]);
 
   function getErrorDetail(err, fallback) {

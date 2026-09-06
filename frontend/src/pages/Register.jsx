@@ -20,6 +20,9 @@ function Register() {
     if (password !== confirmPassword) {
       return "Passwords do not match.";
     }
+    if (password.length < 8 || new TextEncoder().encode(password).length > 72) {
+      return "Password must be 8-72 UTF-8 bytes.";
+    }
     return "";
   }
 
@@ -124,6 +127,8 @@ function Register() {
                   id="password"
                   type={showPassword ? "text" : "password"}
                   required
+                  minLength={8}
+                  maxLength={72}
                   autoComplete="new-password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}

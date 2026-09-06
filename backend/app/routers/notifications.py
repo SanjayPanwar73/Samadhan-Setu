@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -11,6 +11,8 @@ router = APIRouter(prefix="/notifications", tags=["notifications"])
 
 @router.get("")
 def list_notifications(
+    offset: int = Query(default=0, ge=0, le=100_000),
+    limit: int = Query(default=25, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -22,7 +24,12 @@ def list_notifications(
     elif current_user.role.value == "management":
         query = query.filter(Complaint.status.in_([ComplaintStatus.pending, ComplaintStatus.in_progress]))
 
-    complaints = query.order_by(Complaint.updated_at.desc(), Complaint.created_at.desc()).limit(25).all()
+    complaints = (
+        query.order_by(Complaint.updated_at.desc(), Complaint.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
     notifications = []
     for complaint in complaints:
         if current_user.role.value == "user":

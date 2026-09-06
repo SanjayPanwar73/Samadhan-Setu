@@ -29,7 +29,7 @@ function Notifications() {
   }, []);
 
   useEffect(() => {
-    fetchNotifications();
+    queueMicrotask(() => void fetchNotifications());
   }, [fetchNotifications]);
 
   return (

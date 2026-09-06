@@ -19,6 +19,7 @@ const statusStyles = {
   in_progress: "bg-blue-100 text-blue-800",
   resolved: "bg-green-100 text-green-800",
   rejected: "bg-red-100 text-red-800",
+  reopened: "bg-orange-100 text-orange-800",
 };
 
 function StatusBadge({ status }) {
@@ -57,6 +58,7 @@ const VALID_TRANSITIONS = {
   pending: ["in_progress", "rejected"],
   in_progress: ["resolved", "rejected"],
   resolved: [],
+  reopened: ["in_progress"],
   rejected: [],
 };
 
@@ -88,6 +90,12 @@ function ComplaintDetail() {
   const [suggestion, setSuggestion] = useState(null);
   const [suggestionLoading, setSuggestionLoading] = useState(false);
   const [suggestionError, setSuggestionError] = useState("");
+  const [showPriorityBreakdown, setShowPriorityBreakdown] = useState(false);
+  const [feedbackRating, setFeedbackRating] = useState(0);
+  const [feedbackComment, setFeedbackComment] = useState("");
+  const [feedbackError, setFeedbackError] = useState("");
+  const [feedbackSuccess, setFeedbackSuccess] = useState("");
+  const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false);
 
   // Admin override panel state
   const [departments, setDepartments] = useState([]);
@@ -127,9 +135,9 @@ function ComplaintDetail() {
   }, [id]);
 
   useEffect(() => {
-    if (isValidId) {
-      fetchComplaint();
-    }
+    queueMicrotask(() => {
+      if (isValidId) void fetchComplaint();
+    });
   }, [isValidId, fetchComplaint]);
 
   // Admin-only: load departments for the override dropdown.
@@ -144,24 +152,28 @@ function ComplaintDetail() {
   }, [isAdmin]);
 
   useEffect(() => {
-    if (!canUpdateStatus || !isValidId) return;
-    setSuggestionLoading(true);
-    setSuggestionError("");
-    api
-      .get(`/complaints/${id}/suggested-resolution`)
-      .then((response) => setSuggestion(response.data))
-      .catch((err) => {
-        const detail = err.response?.data?.detail;
-        setSuggestionError(typeof detail === "string" ? detail : "Could not load suggestions.");
-      })
-      .finally(() => setSuggestionLoading(false));
+    queueMicrotask(() => {
+      if (!canUpdateStatus || !isValidId) return;
+      setSuggestionLoading(true);
+      setSuggestionError("");
+      void api
+        .get(`/complaints/${id}/suggested-resolution`)
+        .then((response) => setSuggestion(response.data))
+        .catch((err) => {
+          const detail = err.response?.data?.detail;
+          setSuggestionError(typeof detail === "string" ? detail : "Could not load suggestions.");
+        })
+        .finally(() => setSuggestionLoading(false));
+    });
   }, [canUpdateStatus, id, isValidId]);
 
   // Pre-fill the override form with the complaint's current values once loaded.
   useEffect(() => {
-    if (!complaint) return;
-    setOverrideDepartmentId(complaint.department_id != null ? String(complaint.department_id) : "");
-    setOverridePriorityScore(complaint.priority_score != null ? String(complaint.priority_score) : "");
+    queueMicrotask(() => {
+      if (!complaint) return;
+      setOverrideDepartmentId(complaint.department_id != null ? String(complaint.department_id) : "");
+      setOverridePriorityScore(complaint.priority_score != null ? String(complaint.priority_score) : "");
+    });
   }, [complaint]);
 
   async function handleStatusUpdate(newStatus) {
@@ -282,6 +294,34 @@ function ComplaintDetail() {
     }
   }
 
+  async function handleFeedbackSubmit(event) {
+    event.preventDefault();
+    setFeedbackError("");
+    setFeedbackSuccess("");
+
+    if (!feedbackRating) {
+      setFeedbackError("Please select a rating from 1 to 5.");
+      return;
+    }
+
+    setIsSubmittingFeedback(true);
+    try {
+      await api.post(`/complaints/${id}/feedback`, {
+        rating: feedbackRating,
+        comment: feedbackComment.trim() || null,
+      });
+      setFeedbackSuccess("Thank you. Your feedback has been recorded.");
+      setFeedbackRating(0);
+      setFeedbackComment("");
+      await fetchComplaint();
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      setFeedbackError(typeof detail === "string" ? detail : "Could not submit feedback. Please try again.");
+    } finally {
+      setIsSubmittingFeedback(false);
+    }
+  }
+
 
   if (!isValidId) {
     return (
@@ -296,6 +336,7 @@ function ComplaintDetail() {
           Back
         </button>
       </div>
+
     );
   }
 
@@ -331,13 +372,6 @@ function ComplaintDetail() {
 
   return (
     <div className="max-w-2xl mx-auto space-y-4">
-      <button
-        onClick={() => navigate(backHref)}
-        className="text-sm text-slate-500 hover:underline"
-      >
-        ← Back
-      </button>
-
       {/* Core complaint information, as entered/tracked by the system */}
       <div className="bg-white rounded-lg shadow p-6">
         <div className="flex items-start justify-between gap-4">
@@ -425,6 +459,105 @@ function ComplaintDetail() {
         */}
       </div>
 
+      {role === "user" && complaint.status === "resolved" && (
+        <div className="bg-white rounded-lg shadow p-6">
+          <h2 className="text-sm font-semibold text-slate-800">Share your feedback</h2>
+          <p className="mt-1 text-xs text-slate-500">
+            Tell us how well this complaint was resolved.
+          </p>
+          <form onSubmit={handleFeedbackSubmit} className="mt-4 space-y-4">
+            <fieldset>
+              <legend className="text-xs font-medium text-slate-700">Rating</legend>
+              <div className="mt-2 flex gap-2" role="radiogroup" aria-label="Resolution rating">
+                {[1, 2, 3, 4, 5].map((rating) => (
+                  <button
+                    key={rating}
+                    type="button"
+                    role="radio"
+                    aria-checked={feedbackRating === rating}
+                    aria-label={`${rating} out of 5`}
+                    onClick={() => setFeedbackRating(rating)}
+                    className={`rounded-md border px-3 py-2 text-sm font-semibold ${
+                      feedbackRating === rating
+                        ? "border-brand-600 bg-brand-600 text-white"
+                        : "border-slate-300 text-slate-600 hover:bg-slate-50"
+                    }`}
+                  >
+                    {rating}
+                  </button>
+                ))}
+              </div>
+            </fieldset>
+            <label className="block">
+              <span className="text-xs font-medium text-slate-700">Comment (optional)</span>
+              <textarea
+                value={feedbackComment}
+                onChange={(event) => setFeedbackComment(event.target.value)}
+                maxLength={2000}
+                rows={3}
+                placeholder="What could we improve?"
+                className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+              />
+            </label>
+            <button
+              type="submit"
+              disabled={isSubmittingFeedback}
+              className="rounded-md bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isSubmittingFeedback ? "Submitting..." : "Submit feedback"}
+            </button>
+            {feedbackSuccess && (
+              <p className="rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">
+                {feedbackSuccess}
+              </p>
+            )}
+            {feedbackError && (
+              <p role="alert" className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
+                {feedbackError}
+              </p>
+            )}
+          </form>
+        </div>
+      )}
+
+      <div className="bg-white rounded-lg shadow p-6">
+        <button
+          type="button"
+          onClick={() => setShowPriorityBreakdown((visible) => !visible)}
+          className="flex w-full items-center justify-between text-left"
+        >
+          <span className="text-sm font-semibold text-slate-800">Why this priority?</span>
+          <span className="text-xs text-slate-500">{showPriorityBreakdown ? "Hide" : "Show"}</span>
+        </button>
+        {showPriorityBreakdown && (
+          <div className="mt-4 space-y-3">
+            {(complaint.priority_breakdown?.components || [])
+              .slice()
+              .sort((a, b) => b.contribution - a.contribution)
+              .map((component) => (
+                <div key={component.name}>
+                  <div className="flex justify-between text-xs text-slate-600">
+                    <span className="capitalize">{component.name.replace("_", " ")}</span>
+                    <span>{component.contribution.toFixed(2)} points</span>
+                  </div>
+                  <div className="mt-1 h-2 rounded-full bg-slate-100">
+                    <div
+                      className="h-2 rounded-full bg-indigo-500"
+                      style={{ width: `${Math.min(component.contribution, 100)}%` }}
+                    />
+                  </div>
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    Raw value: {component.raw_value} · Weight: {(component.weight * 100).toFixed(0)}%
+                  </p>
+                </div>
+              ))}
+            {!complaint.priority_breakdown?.components?.length && (
+              <p className="text-sm text-slate-500">Priority explanation is not available yet.</p>
+            )}
+          </div>
+        )}
+      </div>
+
       {/*
         Staff/admin action panel. The backend is the real authority here
         (require_role("staff","admin") on the PATCH endpoint) — this check
@@ -445,6 +578,8 @@ function ComplaintDetail() {
                 Resolution note (optional)
               </span>
               <textarea
+                aria-label="Resolution note"
+                maxLength={5000}
                 value={resolutionText}
                 onChange={(event) => setResolutionText(event.target.value)}
                 rows={3}
@@ -462,6 +597,7 @@ function ComplaintDetail() {
             <div className="flex flex-wrap gap-2">
               {VALID_TRANSITIONS[complaint.status].map((nextStatus) => (
                 <button
+                  type="button"
                   key={nextStatus}
                   onClick={() => handleStatusUpdate(nextStatus)}
                   disabled={updatingStatus !== null}
@@ -567,7 +703,7 @@ function ComplaintDetail() {
                 type="number"
                 step="0.01"
                 min="0"
-                max="1"
+                max="100"
                 value={overridePriorityScore}
                 onChange={(e) => setOverridePriorityScore(e.target.value)}
                 className="w-32 rounded-md border border-amber-300 px-3 py-2 text-sm bg-white"

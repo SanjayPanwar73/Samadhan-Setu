@@ -12,14 +12,26 @@ from app.core.config import settings
 _BCRYPT_MAX_BYTES = 72  # bcrypt silently ignores anything past 72 bytes
 
 
+def _password_bytes(password: str) -> bytes:
+    encoded = password.encode("utf-8")
+    if len(encoded) > _BCRYPT_MAX_BYTES:
+        raise ValueError("Password exceeds bcrypt's 72-byte limit")
+    return encoded
+
+
 def hash_password(password: str) -> str:
-    password_bytes = password.encode("utf-8")[:_BCRYPT_MAX_BYTES]
+    password_bytes = _password_bytes(password)
     return bcrypt.hashpw(password_bytes, bcrypt.gensalt()).decode("utf-8")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    password_bytes = plain_password.encode("utf-8")[:_BCRYPT_MAX_BYTES]
-    return bcrypt.checkpw(password_bytes, hashed_password.encode("utf-8"))
+    try:
+        password_bytes = _password_bytes(plain_password)
+        return bcrypt.checkpw(password_bytes, hashed_password.encode("utf-8"))
+    except (TypeError, ValueError):
+        # A corrupted legacy hash must behave like an invalid password, not
+        # become an unhandled 500 from the login endpoint.
+        return False
 
 
 def create_access_token(data: dict, expires_minutes: int | None = None) -> str:

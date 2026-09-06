@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import extract, func
 from sqlalchemy.orm import Session
 
@@ -16,16 +16,24 @@ router = APIRouter(
 
 
 @router.get("/priority-queue")
-def priority_queue(db: Session = Depends(get_db), limit: int = 20):
+def priority_queue(
+    offset: int = Query(default=0, ge=0, le=100_000),
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    # Grouping happens in Python because the response represents underlying
+    # issue roots. Bound the candidate set so this endpoint cannot fetch the
+    # entire complaint table on every dashboard refresh.
+    candidate_limit = min((offset + limit) * 10, 500)
     complaints = (
         db.query(Complaint)
-        .filter(Complaint.status.in_([ComplaintStatus.pending, ComplaintStatus.in_progress]))
+        .filter(Complaint.status.in_([ComplaintStatus.pending, ComplaintStatus.in_progress, ComplaintStatus.reopened]))
         .order_by(Complaint.priority_score.desc())
+        .limit(candidate_limit)
         .all()
     )
     groups = {}
     for complaint in complaints:
-        normalized_title = " ".join((complaint.title or "").lower().split())
         key = complaint.issue_root_id or complaint.id
         group = groups.setdefault(
             key,
@@ -48,11 +56,12 @@ def priority_queue(db: Session = Depends(get_db), limit: int = 20):
         group["escalation_level"] = max(
             group["escalation_level"] or 0, complaint.escalation_level or 0
         )
-    return sorted(
+    grouped = sorted(
         groups.values(),
         key=lambda group: group["priority_score"] or 0,
         reverse=True,
-    )[:limit]
+    )
+    return grouped[offset : offset + limit]
 
 
 @router.get("/category-distribution")

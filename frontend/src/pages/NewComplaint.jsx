@@ -104,6 +104,8 @@ function NewComplaint() {
             id="title"
             type="text"
             value={title}
+            maxLength={200}
+            required
             onChange={(e) => setTitle(e.target.value)}
             placeholder="e.g. Wi-Fi is not working in the hostel"
             className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm shadow-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
@@ -118,6 +120,8 @@ function NewComplaint() {
             id="description"
             rows={5}
             value={description}
+            maxLength={10000}
+            required
             onChange={(e) => setDescription(e.target.value)}
             placeholder="Describe what happened, where, and when..."
             className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm shadow-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
@@ -132,6 +136,7 @@ function NewComplaint() {
             id="peopleAffected"
             type="number"
             min={1}
+            max={1000000}
             value={peopleAffected}
             onChange={(e) => setPeopleAffected(e.target.value)}
             className="mt-1 w-32 rounded-xl border border-slate-200 px-3 py-2.5 text-sm shadow-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"

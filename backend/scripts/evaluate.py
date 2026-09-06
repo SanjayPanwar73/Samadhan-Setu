@@ -91,7 +91,9 @@ def eval_priority():
     for text, people_affected, age_days, repeat_count, expected_rank in PRIORITY_TEST_SET:
         sentiment = analyze_sentiment(text)
         severity = sentiment["score"] if sentiment["label"] == "NEGATIVE" else 1 - sentiment["score"]
-        score = compute_priority(severity, people_affected, age_days, repeat_count)
+        score = compute_priority(
+            severity, people_affected, age_days, repeat_count
+        )["final_score"]
         scores.append((text, score, expected_rank))
         print(f"  '{text[:50]}...' -> score={score:.2f}, expected_rank={expected_rank}")
 

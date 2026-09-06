@@ -2,11 +2,10 @@
 
 AI-powered complaint intake, classification, prioritization, and escalation API.
 
-> **Fixed in this version:** added missing `email-validator` dependency (required
-> by Pydantic's `EmailStr`, was causing a startup crash), and added CORS
-> middleware (`CORS_ORIGINS` in `.env`) so the Part B frontend can call this API.
-> Verified end-to-end: register → login → JWT → complaint submission → AI
-> pipeline → RBAC enforcement, all working.
+The local demo uses SQLite and generates an ephemeral signing key when no
+`SECRET_KEY` is configured. Configure a random `SECRET_KEY` (at least 32
+characters), `ENVIRONMENT=production`, and `AUTO_CREATE_SCHEMA=false` for
+production.
 
 ## Setup
 
@@ -30,9 +29,9 @@ uvicorn app.main:app --reload
 ```
 
 - Swagger UI: http://127.0.0.1:8000/docs
-- The app creates all tables automatically on startup (SQLite by default,
-  `complaints.db` in this folder). No manual migration needed for a fresh
-  run — Alembic is there for when the schema changes later.
+- A fresh local SQLite database is created automatically. Existing or
+  production databases must be upgraded explicitly with `python -m alembic
+  upgrade head`; the API does not mutate an existing schema at startup.
 
 ## Seed sample data
 
@@ -64,6 +63,9 @@ python -m scripts.evaluate
 python -m alembic revision --autogenerate -m "describe the change"
 python -m alembic upgrade head
 ```
+
+Migrations form one linear chain ending at `9d1e3f5a7b2c`; do not use
+`Base.metadata.create_all` as a substitute for migrations in production.
 
 ## Project layout
 
