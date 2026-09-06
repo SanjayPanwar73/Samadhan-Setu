@@ -18,8 +18,13 @@ class Settings(BaseSettings):
     DEFAULT_SLA_HOURS: int = 72
 
     # Frontend origins allowed to call this API (comma-separated in .env).
-    # Defaults cover the standard Vite and CRA dev server ports.
-    CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000"]
+    # Explicit origins are retained for production deployments. Local
+    # localhost/127.0.0.1 ports are also accepted by the middleware regex.
+    CORS_ORIGINS: list[str] = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+    ]
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

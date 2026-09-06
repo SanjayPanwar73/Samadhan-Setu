@@ -26,6 +26,7 @@ class ComplaintOut(BaseModel):
     department_id: int | None
     created_by: int
     assigned_to: int | None
+    issue_root_id: int | None
     escalation_level: int
     sla_deadline: datetime | None
     created_at: datetime
@@ -37,3 +38,12 @@ class ComplaintOut(BaseModel):
 class FeedbackCreate(BaseModel):
     rating: int
     comment: str | None = None
+
+
+class ComplaintOverride(BaseModel):
+    department_id: int | None = None
+    priority_score: float | None = None
+
+
+class ComplaintAssignment(BaseModel):
+    staff_id: int | None = None

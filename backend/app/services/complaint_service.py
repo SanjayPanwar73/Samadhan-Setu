@@ -9,6 +9,7 @@ from app.ai.priority import compute_priority
 from app.core.config import settings
 from app.models.complaint import Complaint
 from app.models.department import Department
+from app.models.user import User, UserRole
 from app.models.complaint_history import ComplaintHistory
 from app.schemas.complaint import ComplaintCreate
 
@@ -58,6 +59,22 @@ def create_complaint(db: Session, payload: ComplaintCreate, user_id: int) -> Com
     similar_results = find_similar(text, top_k=5)
     get_index().add(complaint.id, text)
     repeat_count = _count_similar(complaint.id, similar_results)
+    similar_ids = [
+        cid for cid, distance in similar_results
+        if cid != complaint.id and distance < 1.0
+    ]
+    if similar_ids:
+        matched = (
+            db.query(Complaint)
+            .filter(Complaint.id.in_(similar_ids))
+            .order_by(Complaint.id)
+            .first()
+        )
+        complaint.issue_root_id = (
+            matched.issue_root_id if matched and matched.issue_root_id else matched.id
+        ) if matched else complaint.id
+    else:
+        complaint.issue_root_id = complaint.id
 
     # 4. Sentiment
     sentiment = analyze_sentiment(text)
@@ -74,6 +91,15 @@ def create_complaint(db: Session, payload: ComplaintCreate, user_id: int) -> Com
 
     # 6. Department auto-assign
     department_id = _assign_department(db, category)
+    if department_id is not None:
+        assigned_staff = (
+            db.query(User)
+            .filter(User.role == UserRole.staff)
+            .order_by(User.id)
+            .first()
+        )
+        if assigned_staff:
+            complaint.assigned_to = assigned_staff.id
 
     # 7. Update the row with everything the AI produced
     complaint.category = category

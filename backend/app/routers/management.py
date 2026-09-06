@@ -21,20 +21,38 @@ def priority_queue(db: Session = Depends(get_db), limit: int = 20):
         db.query(Complaint)
         .filter(Complaint.status.in_([ComplaintStatus.pending, ComplaintStatus.in_progress]))
         .order_by(Complaint.priority_score.desc())
-        .limit(limit)
         .all()
     )
-    return [
-        {
-            "id": c.id,
-            "title": c.title,
-            "category": c.category,
-            "priority_score": c.priority_score,
-            "status": c.status,
-            "escalation_level": c.escalation_level,
-        }
-        for c in complaints
-    ]
+    groups = {}
+    for complaint in complaints:
+        normalized_title = " ".join((complaint.title or "").lower().split())
+        key = complaint.issue_root_id or complaint.id
+        group = groups.setdefault(
+            key,
+            {
+                "id": complaint.id,
+                "title": complaint.title,
+                "category": complaint.category,
+                "priority_score": complaint.priority_score,
+                "status": complaint.status,
+                "escalation_level": complaint.escalation_level,
+                "report_count": 0,
+                "complaint_ids": [],
+            },
+        )
+        group["report_count"] += 1
+        group["complaint_ids"].append(complaint.id)
+        group["priority_score"] = max(
+            group["priority_score"] or 0, complaint.priority_score or 0
+        )
+        group["escalation_level"] = max(
+            group["escalation_level"] or 0, complaint.escalation_level or 0
+        )
+    return sorted(
+        groups.values(),
+        key=lambda group: group["priority_score"] or 0,
+        reverse=True,
+    )[:limit]
 
 
 @router.get("/category-distribution")

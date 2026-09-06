@@ -31,6 +31,7 @@ class Complaint(Base):
     department_id = Column(Integer, ForeignKey("departments.id"), nullable=True)
     created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
     assigned_to = Column(Integer, ForeignKey("users.id"), nullable=True)
+    issue_root_id = Column(Integer, ForeignKey("complaints.id"), nullable=True, index=True)
 
     people_affected = Column(Integer, default=1)
     repeat_count = Column(Integer, default=1)
