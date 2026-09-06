@@ -33,19 +33,24 @@ uvicorn app.main:app --reload
   production databases must be upgraded explicitly with `python -m alembic
   upgrade head`; the API does not mutate an existing schema at startup.
 
-## Seed sample data
+## Seed sample data and provision the initial admin
 
-Populates departments, one user per role, and ~25 sample complaints run
+Provision the initial admin from backend-only environment variables, then
+populate demo users and ~25 sample complaints run
 through the full AI pipeline:
 
 ```bash
 python -m scripts.seed
 ```
 
-Login credentials for all seeded users: password is `password123`
+For local development, the default admin and demo password is `password123`.
+Set `INITIAL_ADMIN_EMAIL` and `INITIAL_ADMIN_PASSWORD` in `.env` before
+running the seed command in any non-development environment. The seed is
+idempotent and never creates a second admin.
+
+- Initial admin: admin@example.com (role: admin)
 - user@example.com (role: user)
 - staff@example.com (role: staff)
-- admin@example.com (role: admin)
 - management@example.com (role: management)
 
 ## Run the eval harness

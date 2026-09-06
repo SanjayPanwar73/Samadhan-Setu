@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24
     AUTO_CREATE_SCHEMA: bool = True
+    INITIAL_ADMIN_EMAIL: str | None = None
+    INITIAL_ADMIN_PASSWORD: str | None = None
+    SEED_DEMO_ACCOUNTS: bool = True
 
     ESCALATION_CHECK_INTERVAL_MINUTES: int = 10
     # An overdue complaint may be escalated again only after this interval.

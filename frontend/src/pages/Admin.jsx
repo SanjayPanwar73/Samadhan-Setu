@@ -52,6 +52,13 @@ function Admin() {
   const [workload, setWorkload] = useState([]);
   const [assigningId, setAssigningId] = useState(null);
   const [assignmentError, setAssignmentError] = useState("");
+  const [accountError, setAccountError] = useState("");
+  const [accountMessage, setAccountMessage] = useState("");
+  const [creatingRole, setCreatingRole] = useState(null);
+  const [accountForms, setAccountForms] = useState({
+    staff: { name: "", email: "", password: "", department_id: "" },
+    management: { name: "", email: "", password: "", department_id: "" },
+  });
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -104,6 +111,41 @@ function Admin() {
     }
   }
 
+  async function handleCreateAccount(role) {
+    const form = accountForms[role];
+    setCreatingRole(role);
+    setAccountError("");
+    setAccountMessage("");
+    try {
+      const response = await api.post(`/admin/${role}`, {
+        name: form.name,
+        email: form.email,
+        password: form.password,
+        ...(role === "staff" && form.department_id
+          ? { department_id: Number(form.department_id) }
+          : {}),
+      });
+      setAccountForms((current) => ({
+        ...current,
+        [role]: { name: "", email: "", password: "", department_id: "" },
+      }));
+      setAccountMessage(`${response.data.role} account created for ${response.data.email}.`);
+      await fetchData();
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      setAccountError(typeof detail === "string" ? detail : "Could not create the account.");
+    } finally {
+      setCreatingRole(null);
+    }
+  }
+
+  function updateAccountForm(role, field, value) {
+    setAccountForms((current) => ({
+      ...current,
+      [role]: { ...current[role], [field]: value },
+    }));
+  }
+
   useEffect(() => {
     queueMicrotask(() => void fetchData());
   }, [fetchData]);
@@ -149,6 +191,85 @@ function Admin() {
           Manage Departments
         </Link>
       </header>
+
+      <section className="mb-6 rounded-lg bg-white p-4 shadow">
+        <h2 className="text-sm font-semibold text-slate-800">Account Management</h2>
+        <p className="mt-1 text-xs text-slate-500">
+          Only administrators can create Staff or Management accounts. The server assigns the role.
+        </p>
+        {(accountError || accountMessage) && (
+          <p className={`mt-3 text-sm ${accountError ? "text-red-600" : "text-green-600"}`} role="alert">
+            {accountError || accountMessage}
+          </p>
+        )}
+        <div className="mt-4 grid gap-4 lg:grid-cols-2">
+          {["staff", "management"].map((role) => {
+            const form = accountForms[role];
+            return (
+              <form
+                key={role}
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void handleCreateAccount(role);
+                }}
+                className="rounded-md border border-slate-200 p-3"
+              >
+                <h3 className="text-sm font-medium capitalize text-slate-700">
+                  Create {role}
+                </h3>
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  <input
+                    required
+                    value={form.name}
+                    onChange={(event) => updateAccountForm(role, "name", event.target.value)}
+                    placeholder="Full name"
+                    className="rounded-md border border-slate-300 px-3 py-2 text-sm"
+                  />
+                  <input
+                    required
+                    type="email"
+                    value={form.email}
+                    onChange={(event) => updateAccountForm(role, "email", event.target.value)}
+                    placeholder="Email"
+                    className="rounded-md border border-slate-300 px-3 py-2 text-sm"
+                  />
+                  <input
+                    required
+                    minLength={8}
+                    maxLength={72}
+                    type="password"
+                    value={form.password}
+                    onChange={(event) => updateAccountForm(role, "password", event.target.value)}
+                    placeholder="Temporary password"
+                    className="rounded-md border border-slate-300 px-3 py-2 text-sm"
+                  />
+                  {role === "staff" && (
+                    <select
+                      value={form.department_id}
+                      onChange={(event) => updateAccountForm(role, "department_id", event.target.value)}
+                      className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
+                    >
+                      <option value="">No department</option>
+                      {departments.map((department) => (
+                        <option key={department.id} value={department.id}>
+                          {department.name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+                <button
+                  type="submit"
+                  disabled={creatingRole === role}
+                  className="mt-3 rounded-md bg-slate-800 px-3 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-60"
+                >
+                  {creatingRole === role ? "Creating..." : `Create ${role}`}
+                </button>
+              </form>
+            );
+          })}
+        </div>
+      </section>
 
       {/* Filters */}
       <div className="flex flex-wrap items-end gap-3 mb-4">

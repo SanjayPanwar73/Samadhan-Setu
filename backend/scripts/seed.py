@@ -11,6 +11,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.core.database import Base, engine, SessionLocal
+from app.core.config import settings
 from app.core.security import hash_password
 from app.models.user import User, UserRole
 from app.models.department import Department
@@ -29,10 +30,9 @@ DEPARTMENTS = [
     ("General Grievance", "other"),
 ]
 
-USERS = [
+DEMO_USERS = [
     ("Regular User", "user@example.com", "password123", UserRole.user),
     ("Staff Member", "staff@example.com", "password123", UserRole.staff),
-    ("Admin User", "admin@example.com", "password123", UserRole.admin),
     ("Management User", "management@example.com", "password123", UserRole.management),
 ]
 
@@ -84,11 +84,47 @@ def run():
             dept_objs[category] = dept
         print(f"  {len(dept_objs)} departments ready.")
 
+        print("Provisioning the initial admin...")
+        admin_email = settings.INITIAL_ADMIN_EMAIL
+        admin_password = settings.INITIAL_ADMIN_PASSWORD
+        if settings.ENVIRONMENT == "development":
+            admin_email = admin_email or "admin@example.com"
+            admin_password = admin_password or "password123"
+        if not admin_email or not admin_password:
+            raise RuntimeError(
+                "INITIAL_ADMIN_EMAIL and INITIAL_ADMIN_PASSWORD are required outside development"
+            )
+
+        existing_admin = db.query(User).filter(User.role == UserRole.admin).first()
+        if existing_admin:
+            user_objs = {UserRole.admin: existing_admin}
+            print(f"  Admin already exists ({existing_admin.email}); no duplicate created.")
+        else:
+            existing_email = db.query(User).filter(User.email == admin_email.lower()).first()
+            if existing_email:
+                raise RuntimeError(
+                    "INITIAL_ADMIN_EMAIL belongs to a non-admin account; choose a different email"
+                )
+            admin = User(
+                name="Admin User",
+                email=admin_email.lower(),
+                hashed_password=hash_password(admin_password),
+                role=UserRole.admin,
+            )
+            db.add(admin)
+            db.commit()
+            db.refresh(admin)
+            user_objs = {UserRole.admin: admin}
+            print(f"  Provisioned admin {admin.email}.")
+
         print("Seeding users...")
-        user_objs = {}
-        for name, email, password, role in USERS:
+        for name, email, password, role in DEMO_USERS:
+            if not settings.SEED_DEMO_ACCOUNTS and role != UserRole.user:
+                continue
             existing = db.query(User).filter(User.email == email).first()
             if existing:
+                if existing.role != role:
+                    raise RuntimeError(f"Demo email {email} is already assigned another role")
                 user_objs[role] = existing
                 continue
             user = User(name=name, email=email, hashed_password=hash_password(password), role=role)

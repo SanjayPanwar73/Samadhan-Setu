@@ -32,9 +32,9 @@ function Login() {
       // and route guards can use it.
       localStorage.setItem("token", response.data.access_token);
 
-      // Decode the token we just stored to get the role, then send
-      // the user to the right dashboard.
-      const role = getRole();
+      // Use the role returned by the authenticated backend response for the
+      // first redirect; the signed token remains the persisted auth state.
+      const role = response.data.user?.role || response.data.role || getRole();
       navigate(getHomeRouteForRole(role), { replace: true });
     } catch (err) {
       if (err.response && err.response.status === 401) {
