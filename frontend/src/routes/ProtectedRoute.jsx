@@ -1,37 +1,35 @@
-import { Navigate, Outlet } from "react-router-dom";
-import { isAuthenticated, getRole } from "../utils/auth";
+﻿import { Navigate, Outlet, useLocation } from "react-router-dom";
+import { useAuth } from "../contexts/AuthContext";
+import { isAuthenticated } from "../utils/auth";
+import { Button, ErrorState, PageSkeleton } from "../components/ui";
 
-/**
- * Route guard used to wrap a group of <Route> elements.
- *
- * Usage:
- *   <Route element={<ProtectedRoute allowedRoles={["staff"]} />}>
- *     <Route path="/staff" element={<StaffDashboard />} />
- *   </Route>
- *
- * - No token at all      -> redirect to /login
- * - Token, wrong role     -> redirect to that user's own dashboard
- * - Token, allowed role   -> render the nested route (<Outlet />)
- *
- * If allowedRoles is omitted, any authenticated user may access
- * the route regardless of role.
- */
 function ProtectedRoute({ allowedRoles }) {
-  if (!isAuthenticated()) {
-    return <Navigate to="/login" replace />;
+  const location = useLocation();
+  const { user, role, loading, error, refreshUser, signOut } = useAuth();
+  const from = `${location.pathname}${location.search}${location.hash}`;
+
+  if (!isAuthenticated())
+    return <Navigate to="/login" replace state={{ from }} />;
+  if (loading && !user)
+    return (
+      <div className="mx-auto max-w-7xl p-6 sm:p-10">
+        <PageSkeleton />
+      </div>
+    );
+  if (error && !user) {
+    return (
+      <div className="mx-auto max-w-xl p-6 pt-20">
+        <ErrorState message={error} onRetry={() => refreshUser()} />
+        <div className="mt-4 text-center">
+          <Button variant="ghost" onClick={signOut}>
+            Return to sign in
+          </Button>
+        </div>
+      </div>
+    );
   }
-
-  const role = getRole();
-
-  // Token exists but couldn't be decoded / has no role / is expired.
-  if (!role) {
-    return <Navigate to="/login" replace />;
-  }
-
-  if (allowedRoles && !allowedRoles.includes(role)) {
-    return <Navigate to="/unauthorized" replace state={{ from: window.location.pathname }} />;
-  }
-
+  if (allowedRoles && !allowedRoles.includes(role))
+    return <Navigate to="/unauthorized" replace state={{ from }} />;
   return <Outlet />;
 }
 

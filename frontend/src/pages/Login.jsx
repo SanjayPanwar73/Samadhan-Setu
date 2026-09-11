@@ -1,153 +1,152 @@
-import { useState } from "react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
-import api from "../services/api";
-import { getRole, getHomeRouteForRole } from "../utils/auth";
+﻿import { useEffect, useState } from "react";
+import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
+import api, { getApiError } from "../services/api";
+import { getHomeRouteForRole, getSafeReturnPath } from "../utils/auth";
+import { useAuth } from "../contexts/AuthContext";
+import AuthLayout from "../components/AuthLayout";
+import PasswordInput from "../components/PasswordInput";
+import Icon from "../components/Icon";
+import { Alert, Button, Field } from "../components/ui";
 
-const DEMO_ACCOUNTS = [
-  { label: "User", email: "user@example.com" },
-  { label: "Staff", email: "staff@example.com" },
-  { label: "Admin", email: "admin@example.com" },
-  { label: "Management", email: "management@example.com" },
-];
-
-function Login() {
+export default function Login() {
   const navigate = useNavigate();
   const location = useLocation();
-
+  const { role, completeLogin } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const successMessage = location.state?.successMessage;
-
-  async function handleSubmit(e) {
-    e.preventDefault();
+  useEffect(() => {
+    document.title = "Sign in · Samadhan Setu";
+  }, []);
+  if (role)
+    return (
+      <Navigate
+        to={
+          getSafeReturnPath(location.state?.from, role) ||
+          getHomeRouteForRole(role)
+        }
+        replace
+      />
+    );
+  async function submit(event) {
+    event.preventDefault();
+    if (loading) return;
     setError("");
-    setIsLoading(true);
-
+    if (new TextEncoder().encode(password).length > 72) {
+      setError("Password is too long. Use no more than 72 bytes.");
+      return;
+    }
+    setLoading(true);
     try {
-      const response = await api.post("/auth/login", { email, password });
-
-      // Store the JWT so future requests (via the Axios interceptor)
-      // and route guards can use it.
-      localStorage.setItem("token", response.data.access_token);
-
-      // Use the role returned by the authenticated backend response for the
-      // first redirect; the signed token remains the persisted auth state.
-      const role = response.data.user?.role || response.data.role || getRole();
-      navigate(getHomeRouteForRole(role), { replace: true });
-    } catch (err) {
-      if (err.response && err.response.status === 401) {
-        setError("Incorrect email or password.");
-      } else if (err.response && err.response.data && err.response.data.detail) {
-        setError(err.response.data.detail);
-      } else {
-        setError("Something went wrong. Please try again.");
-      }
+      const { data } = await api.post("/auth/login", {
+        email: email.trim(),
+        password,
+      });
+      completeLogin(data);
+      const nextRole = data.user?.role || data.role;
+      navigate(
+        getSafeReturnPath(location.state?.from, nextRole) ||
+          getHomeRouteForRole(nextRole),
+        { replace: true },
+      );
+    } catch (requestError) {
+      setError(
+        requestError.response?.status === 401
+          ? "The email or password is incorrect. Please try again."
+          : getApiError(
+              requestError,
+              "We couldn’t sign you in. Please try again.",
+            ),
+      );
     } finally {
-      setIsLoading(false);
+      setLoading(false);
     }
   }
-
   return (
-    <div className="flex min-h-screen items-center justify-center bg-[#f5f7fb] px-4 py-8">
-      <div className="grid w-full max-w-4xl overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-xl shadow-slate-200/60 md:grid-cols-[0.9fr_1.1fr]">
-        <div className="hidden bg-slate-900 p-10 text-white md:block">
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-brand-500 text-sm font-bold">SS</div>
-          <p className="mt-16 text-sm font-medium text-brand-200">AI-powered complaint intelligence</p>
-          <h1 className="mt-3 text-3xl font-bold leading-tight">Resolve issues.<br />Build trust.</h1>
-          <p className="mt-5 text-sm leading-6 text-slate-300">One transparent platform for students, officers, administrators, and leadership.</p>
-        </div>
-        <div className="p-6 sm:p-10">
-        <p className="text-sm font-semibold text-brand-600">Welcome back</p>
-        <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-900">Sign in to Samadhan Setu</h1>
-        <p className="mt-2 text-sm text-slate-500">Continue managing complaints and resolutions.</p>
-
-        {successMessage && (
-          <p className="mt-4 rounded-xl border border-green-200 bg-green-50 px-3 py-2 text-center text-sm text-green-700">
-            {successMessage}
-          </p>
-        )}
-
-        <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-          <p className="text-xs font-medium text-slate-600">Demo accounts</p>
-          <p className="mt-1 text-xs text-slate-500">
-            Select a role, then click Login. Demo password: <strong>password123</strong>
-          </p>
-          <div className="mt-2 grid grid-cols-2 gap-2">
-            {DEMO_ACCOUNTS.map((account) => (
-              <button
-                key={account.email}
-                type="button"
-                onClick={() => {
-                  setEmail(account.email);
-                  setPassword("password123");
-                  setError("");
-                }}
-                className="rounded-xl border border-slate-200 bg-white px-2 py-2 text-xs font-semibold text-slate-700 hover:border-brand-300 hover:bg-brand-50"
-              >
-                {account.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <form onSubmit={handleSubmit} className="mt-6 space-y-4">
-          <div>
-            <label htmlFor="email" className="block text-sm font-medium text-slate-700">
-              Email
-            </label>
-            <input
-              id="email"
-              type="email"
-              required
-              autoComplete="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm shadow-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
-            />
-          </div>
-
-          <div>
-            <label htmlFor="password" className="block text-sm font-medium text-slate-700">
-              Password
-            </label>
-            <input
-              id="password"
-              type="password"
-              required
-              autoComplete="current-password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm shadow-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
-            />
-          </div>
-
-          {error && (
-            <p className="text-sm text-red-600" role="alert">
-              {error}
+    <AuthLayout>
+      <p className="eyebrow">Welcome to your workspace</p>
+      <h1 className="text-3xl font-semibold tracking-[-.045em] text-brand-900">
+        Welcome back.
+      </h1>
+      <p className="mt-3 text-sm leading-6 text-slate-500">
+        Sign in to keep things moving forward.
+      </p>
+      {location.state?.successMessage && (
+        <Alert variant="success" className="mt-6">
+          {location.state.successMessage}
+        </Alert>
+      )}
+      <form className="mt-8 space-y-5" onSubmit={submit}>
+        <Field label="Email address" htmlFor="email">
+          <input
+            id="email"
+            name="email"
+            type="email"
+            autoComplete="email"
+            className="input"
+            placeholder="you@example.com"
+            required
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            disabled={loading}
+          />
+        </Field>
+        <Field label="Password" htmlFor="password">
+          <PasswordInput
+            id="password"
+            name="password"
+            autoComplete="current-password"
+            required
+            maxLength={72}
+            placeholder="Enter your password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            disabled={loading}
+          />
+        </Field>
+        {error && <Alert variant="error">{error}</Alert>}
+        <Button type="submit" loading={loading} className="w-full !min-h-11">
+          {loading ? "Signing in…" : "Sign in"}
+          {!loading && <Icon name="arrowRight" size={16} />}
+        </Button>
+      </form>
+      <p className="mt-6 text-center text-xs text-slate-500">
+        New to Samadhan Setu?{" "}
+        <Link
+          to="/register"
+          className="font-semibold text-brand-600 hover:underline"
+        >
+          Create an account
+        </Link>
+      </p>
+      {import.meta.env.DEV &&
+        import.meta.env.VITE_ENABLE_DEMO_ACCOUNTS === "true" && (
+          <details className="mt-7 rounded-lg border border-slate-200 p-3 text-xs text-slate-500">
+            <summary className="cursor-pointer font-medium">
+              Development demo accounts
+            </summary>
+            <p className="mt-2 leading-5">
+              Requires the backend demo seed. Password: password123.
             </p>
-          )}
-
-          <button
-            type="submit"
-            disabled={isLoading}
-            className="w-full rounded-xl bg-brand-600 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {isLoading ? "Logging in..." : "Login"}
-          </button>
-        </form>
-
-        <p className="mt-4 text-sm text-slate-500 text-center">
-          Don't have an account?{" "}
-          <Link to="/register" className="text-slate-800 font-medium hover:underline">
-            Register
-          </Link>
-        </p>
-        </div>
-      </div>
-    </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {["user", "staff", "admin", "management"].map((value) => (
+                <Button
+                  key={value}
+                  variant="secondary"
+                  className="!min-h-8 !px-2 !py-1 !text-xs capitalize"
+                  onClick={() => {
+                    setEmail(`${value}@example.com`);
+                    setPassword("password123");
+                    setError("");
+                  }}
+                >
+                  {value}
+                </Button>
+              ))}
+            </div>
+          </details>
+        )}
+    </AuthLayout>
   );
 }
-
-export default Login;

@@ -1,177 +1,258 @@
-import { useState } from "react";
+﻿import { useState } from "react";
 import { Link } from "react-router-dom";
-import api from "../services/api";
+import api, { getApiError } from "../services/api";
+import Icon from "../components/Icon";
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  Field,
+  PageHeader,
+  StatusBadge,
+} from "../components/ui";
 
-function NewComplaint() {
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [peopleAffected, setPeopleAffected] = useState(1);
-  const [isLoading, setIsLoading] = useState(false);
+export default function NewComplaint() {
+  const [form, setForm] = useState({ title: "", description: "", people: "1" });
+  const [errors, setErrors] = useState({});
   const [error, setError] = useState("");
-  const [submittedComplaint, setSubmittedComplaint] = useState(null);
-
-  async function handleSubmit(e) {
-    e.preventDefault();
+  const [loading, setLoading] = useState(false);
+  const [submitted, setSubmitted] = useState(null);
+  function update(field, value) {
+    setForm((current) => ({ ...current, [field]: value }));
+    setErrors((current) => ({ ...current, [field]: "" }));
+  }
+  async function submit(event) {
+    event.preventDefault();
+    if (loading) return;
+    const invalid = {};
+    if (form.title.trim().length < 3)
+      invalid.title = "Add a short title with at least 3 characters.";
+    if (form.description.trim().length < 10)
+      invalid.description = "Describe the concern in at least 10 characters.";
+    const people = Number(form.people);
+    if (!Number.isSafeInteger(people) || people < 1 || people > 1000000)
+      invalid.people = "Enter a whole number from 1 to 1,000,000.";
+    setErrors(invalid);
     setError("");
-
-    if (!title.trim() || !description.trim()) {
-      setError("Please fill in both the title and description.");
+    if (Object.keys(invalid).length) {
+      document.getElementById(Object.keys(invalid)[0])?.focus();
       return;
     }
-
-    setIsLoading(true);
+    setLoading(true);
     try {
-      // Matches the backend's ComplaintCreate schema exactly.
-      // No attachment field exists on this endpoint, so none is sent.
-      const response = await api.post("/complaints", {
-        title,
-        description,
-        people_affected: Number(peopleAffected) || 1,
-      });
-
-      setSubmittedComplaint(response.data);
-    } catch (err) {
-      const detail = err.response?.data?.detail;
-      if (typeof detail === "string") {
-        setError(detail);
-      } else if (Array.isArray(detail) && detail.length > 0) {
-        setError(detail[0].msg || "Please check the form and try again.");
-      } else {
-        setError("Something went wrong while submitting your complaint. Please try again.");
-      }
+      const { data } = await api.post(
+        "/complaints",
+        {
+          title: form.title.trim(),
+          description: form.description.trim(),
+          people_affected: people,
+        },
+        { timeout: 120000 },
+      );
+      setSubmitted(data);
+    } catch (requestError) {
+      setError(
+        getApiError(
+          requestError,
+          "We couldn’t submit your complaint. Your details are still here.",
+        ),
+      );
     } finally {
-      setIsLoading(false);
+      setLoading(false);
     }
   }
-
-  // Success state: show the backend's response and let the user
-  // move on, instead of just resetting the form silently.
-  if (submittedComplaint) {
+  if (submitted)
     return (
-      <div className="max-w-lg mx-auto bg-white rounded-lg shadow p-6">
-        <h1 className="text-xl font-semibold text-green-700">
-          Complaint submitted successfully
-        </h1>
-
-        <dl className="mt-4 space-y-2 text-sm text-slate-600">
-          <div className="flex justify-between">
-            <dt className="font-medium text-slate-500">Complaint ID</dt>
-            <dd>#{submittedComplaint.id}</dd>
+      <div className="mx-auto max-w-2xl py-5">
+        <Card className="p-7 text-center sm:p-10">
+          <div className="mx-auto grid h-16 w-16 place-items-center rounded-2xl bg-brand-50 text-brand-600">
+            <Icon name="checkCircle" size={32} />
           </div>
-          <div className="flex justify-between">
-            <dt className="font-medium text-slate-500">Status</dt>
-            <dd className="capitalize">{submittedComplaint.status}</dd>
-          </div>
-          {submittedComplaint.category && (
-            <div className="flex justify-between">
-              <dt className="font-medium text-slate-500">Category</dt>
-              <dd className="capitalize">{submittedComplaint.category}</dd>
+          <p className="eyebrow mt-6">Your concern is on record</p>
+          <h1 className="text-2xl font-semibold tracking-tight text-brand-900">
+            Complaint submitted successfully.
+          </h1>
+          <p className="mt-3 text-sm leading-6 text-slate-500">
+            You can now follow its progress from your workspace.
+          </p>
+          <div className="mt-7 rounded-xl border border-slate-200 bg-slate-50 p-5 text-left">
+            <p className="text-xs text-slate-500">Complaint #{submitted.id}</p>
+            <h2 className="mt-2 text-base font-semibold text-slate-700">
+              {submitted.title}
+            </h2>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <StatusBadge status={submitted.status} />
+              {submitted.category && <Badge>{submitted.category}</Badge>}
             </div>
-          )}
-        </dl>
-
-        <div className="mt-6 flex gap-3">
-          <Link
-            to={`/complaints/${submittedComplaint.id}`}
-            className="flex-1 text-center rounded-md bg-slate-800 text-white text-sm font-medium py-2 hover:bg-slate-700"
-          >
-            View Complaint
-          </Link>
-          <Link
-            to="/complaints"
-            className="flex-1 text-center rounded-md border border-slate-300 text-slate-700 text-sm font-medium py-2 hover:bg-slate-50"
-          >
-            My Complaints
-          </Link>
-        </div>
+          </div>
+          <div className="mt-7 flex flex-wrap justify-center gap-3">
+            <Link
+              to={`/complaints/${submitted.id}`}
+              className="btn btn-primary"
+            >
+              View complaint <Icon name="arrowRight" size={16} />
+            </Link>
+            <Link to="/complaints" className="btn btn-secondary">
+              Back to overview
+            </Link>
+          </div>
+        </Card>
       </div>
     );
-  }
-
   return (
-    <div className="mx-auto grid max-w-5xl gap-6 lg:grid-cols-[1.3fr_0.7fr]">
-      <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
-      <p className="text-sm font-medium text-brand-600">Raise an issue</p>
-      <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-900">Submit a new complaint</h1>
-      <p className="mt-2 text-sm text-slate-500">Give us enough detail so the right team can act quickly.</p>
-
-      <form onSubmit={handleSubmit} className="mt-6 space-y-4">
-        <div>
-          <label htmlFor="title" className="block text-sm font-medium text-slate-700">
-            Title
-          </label>
-          <input
-            id="title"
-            type="text"
-            value={title}
-            maxLength={200}
-            required
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder="e.g. Wi-Fi is not working in the hostel"
-            className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm shadow-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
-          />
-        </div>
-
-        <div>
-          <label htmlFor="description" className="block text-sm font-medium text-slate-700">
-            Description
-          </label>
-          <textarea
-            id="description"
-            rows={5}
-            value={description}
-            maxLength={10000}
-            required
-            onChange={(e) => setDescription(e.target.value)}
-            placeholder="Describe what happened, where, and when..."
-            className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm shadow-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
-          />
-        </div>
-
-        <div>
-          <label htmlFor="peopleAffected" className="block text-sm font-medium text-slate-700">
-            People Affected
-          </label>
-          <input
-            id="peopleAffected"
-            type="number"
-            min={1}
-            max={1000000}
-            value={peopleAffected}
-            onChange={(e) => setPeopleAffected(e.target.value)}
-            className="mt-1 w-32 rounded-xl border border-slate-200 px-3 py-2.5 text-sm shadow-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
-          />
-        </div>
-
-        {error && (
-          <p className="text-sm text-red-600" role="alert">
-            {error}
-          </p>
-        )}
-
-        <button
-          type="submit"
-          disabled={isLoading}
-          className="w-full rounded-xl bg-brand-600 py-2.5 text-sm font-semibold text-white shadow-sm hover:-translate-y-0.5 hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {isLoading ? "Submitting..." : "Submit Complaint"}
-        </button>
-      </form>
+    <div className="page-stack">
+      <PageHeader
+        eyebrow="Make a difference"
+        title="Let’s get it resolved."
+        description="Tell us what needs attention. Clear details help your concern reach the right team."
+      />
+      <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1.6fr)_minmax(260px,1fr)]">
+        <Card>
+          <div className="panel-heading">
+            <div>
+              <h2>Complaint details</h2>
+              <p>All fields are required.</p>
+            </div>
+            <Icon name="file" size={19} className="text-brand-500" />
+          </div>
+          <form onSubmit={submit} className="space-y-6 p-5 sm:p-7">
+            <Field
+              label="What’s the concern?"
+              htmlFor="title"
+              hint={`${form.title.length}/200 characters · A short, specific title works best.`}
+              error={errors.title}
+            >
+              <input
+                id="title"
+                name="title"
+                className="input"
+                placeholder="e.g. Water supply interrupted in Block B"
+                required
+                minLength={3}
+                maxLength={200}
+                value={form.title}
+                onChange={(event) => update("title", event.target.value)}
+                aria-invalid={Boolean(errors.title)}
+                aria-describedby={`title-hint${errors.title ? " title-error" : ""}`}
+                disabled={loading}
+              />
+            </Field>
+            <Field
+              label="Tell us more"
+              htmlFor="description"
+              hint={`${form.description.length.toLocaleString()}/10,000 characters · Include the location, timing, and impact.`}
+              error={errors.description}
+            >
+              <textarea
+                id="description"
+                name="description"
+                className="input min-h-44"
+                rows={7}
+                placeholder="Describe what happened, where it happened, and how it is affecting you…"
+                required
+                minLength={10}
+                maxLength={10000}
+                value={form.description}
+                onChange={(event) => update("description", event.target.value)}
+                aria-invalid={Boolean(errors.description)}
+                aria-describedby={`description-hint${errors.description ? " description-error" : ""}`}
+                disabled={loading}
+              />
+            </Field>
+            <Field
+              label="How many people are affected?"
+              htmlFor="people"
+              hint="Include yourself. Your best estimate helps us understand the impact."
+              error={errors.people}
+            >
+              <input
+                id="people"
+                name="people"
+                type="number"
+                inputMode="numeric"
+                className="input max-w-40"
+                min={1}
+                max={1000000}
+                step={1}
+                required
+                value={form.people}
+                onChange={(event) => update("people", event.target.value)}
+                aria-invalid={Boolean(errors.people)}
+                aria-describedby={`people-hint${errors.people ? " people-error" : ""}`}
+                disabled={loading}
+              />
+            </Field>
+            {error && <Alert variant="error">{error}</Alert>}
+            {loading && (
+              <Alert>
+                We’re submitting and analyzing your concern. This may take a
+                moment; keep this page open.
+              </Alert>
+            )}
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-5">
+              <Link
+                to="/complaints"
+                className={`btn btn-ghost ${loading ? "pointer-events-none opacity-50" : ""}`}
+                aria-disabled={loading}
+                tabIndex={loading ? -1 : undefined}
+              >
+                Cancel
+              </Link>
+              <Button type="submit" loading={loading}>
+                {loading ? "Submitting…" : "Submit complaint"}
+                {!loading && <Icon name="arrowRight" size={16} />}
+              </Button>
+            </div>
+          </form>
+        </Card>
+        <aside className="space-y-5">
+          <Card className="border-brand-100 bg-brand-50 p-6">
+            <span className="inline-flex rounded-xl border border-brand-100 bg-white p-2.5 text-brand-600">
+              <Icon name="sparkles" size={22} />
+            </span>
+            <h2 className="mt-4 text-base font-semibold text-brand-900">
+              A clearer path to the right team.
+            </h2>
+            <p className="mt-3 text-xs leading-6 text-slate-600">
+              Your complaint is analyzed to help determine its category,
+              priority, and department. Similar reports help identify recurring
+              concerns.
+            </p>
+          </Card>
+          <Card className="p-6">
+            <h2 className="text-sm font-semibold text-slate-700">
+              A helpful report includes
+            </h2>
+            <ul className="mt-4 space-y-4">
+              {[
+                [
+                  "A specific location",
+                  "Building, room, area, or service affected.",
+                ],
+                ["When it started", "Mention dates or how often it happens."],
+                ["The impact", "Explain what you’re unable to do."],
+              ].map(([title, description]) => (
+                <li key={title} className="flex items-start gap-3">
+                  <Icon
+                    name="check"
+                    size={16}
+                    className="mt-0.5 text-brand-500"
+                  />
+                  <div>
+                    <h3 className="text-xs font-medium text-slate-700">
+                      {title}
+                    </h3>
+                    <p className="mt-1 text-xs leading-5 text-slate-500">
+                      {description}
+                    </p>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </Card>
+        </aside>
       </div>
-      <aside className="h-fit rounded-2xl border border-brand-100 bg-brand-50 p-6">
-        <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-xl bg-white text-brand-600 shadow-sm">✦</div>
-        <h2 className="font-semibold text-slate-900">AI-assisted resolution</h2>
-        <p className="mt-2 text-sm leading-6 text-slate-600">
-          Samadhan Setu analyzes your complaint to suggest its category, priority, department, and possible duplicate reports.
-        </p>
-        <div className="mt-5 space-y-3 text-sm text-slate-600">
-          <p>✓ Faster routing to the right department</p>
-          <p>✓ Clear priority based on impact</p>
-          <p>✓ Track progress from one place</p>
-        </div>
-      </aside>
     </div>
   );
 }
-
-export default NewComplaint;

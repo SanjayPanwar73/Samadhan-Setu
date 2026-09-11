@@ -1,0 +1,4 @@
+# Keep frontend text files consistent with Prettier on every operating system.
+# Automatic text detection leaves binary assets untouched.
+/frontend/** text=auto eol=lf
+/.gitattributes text eol=lf

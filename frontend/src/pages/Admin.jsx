@@ -1,467 +1,739 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+﻿import { useState } from "react";
 import { Link } from "react-router-dom";
-import api from "../services/api";
+import api, { getApiError } from "../services/api";
+import useResource from "../hooks/useResource";
+import usePagedResource from "../hooks/usePagedResource";
+import {
+  isOpen,
+  isOverdue,
+  matchesPriority,
+  STATUS_OPTIONS,
+} from "../utils/complaints";
+import ComplaintTable from "../components/ComplaintTable";
+import PasswordInput from "../components/PasswordInput";
+import Tabs from "../components/Tabs";
+import Icon from "../components/Icon";
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  ErrorState,
+  Field,
+  Modal,
+  PageHeader,
+  StatCard,
+  TableSkeleton,
+} from "../components/ui";
 
-function formatDate(isoString) {
-  if (!isoString) return "—";
-  return new Date(isoString).toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
-}
-
-const statusStyles = {
-  pending: "bg-yellow-100 text-yellow-800",
-  in_progress: "bg-blue-100 text-blue-800",
-  resolved: "bg-green-100 text-green-800",
-  rejected: "bg-red-100 text-red-800",
-  reopened: "bg-orange-100 text-orange-800",
-};
-
-function StatusBadge({ status }) {
-  const classes = statusStyles[status] || "bg-slate-100 text-slate-700";
-  return (
-    <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium capitalize ${classes}`}>
-      {status ? status.replace("_", " ") : "—"}
-    </span>
+function TeamPanel({ staff, departments, onCreate }) {
+  const workload = useResource("/admin/staff-workload", { collection: true });
+  const management = useResource("/admin/management", { collection: true });
+  const [query, setQuery] = useState("");
+  const names = Object.fromEntries(
+    (departments.data || []).map((item) => [item.id, item.name]),
   );
-}
-
-const STATUS_OPTIONS = ["pending", "in_progress", "reopened", "resolved", "rejected"];
-const PRIORITY_OPTIONS = [
-  { label: "Critical (90–100)", value: "critical" },
-  { label: "High (70–89.99)", value: "high" },
-  { label: "Medium (40–69.99)", value: "medium" },
-  { label: "Low (0–39.99)", value: "low" },
-];
-
-function matchesPriority(score, filterValue) {
-  if (score == null) return false;
-  if (filterValue === "critical") return score >= 90;
-  if (filterValue === "high") return score >= 70 && score < 90;
-  if (filterValue === "medium") return score >= 40 && score < 70;
-  if (filterValue === "low") return score >= 0 && score < 40;
-  return true;
-}
-
-function Admin() {
-  const [complaints, setComplaints] = useState([]);
-  const [departments, setDepartments] = useState([]);
-  const [staff, setStaff] = useState([]);
-  const [workload, setWorkload] = useState([]);
-  const [assigningId, setAssigningId] = useState(null);
-  const [assignmentError, setAssignmentError] = useState("");
-  const [accountError, setAccountError] = useState("");
-  const [accountMessage, setAccountMessage] = useState("");
-  const [creatingRole, setCreatingRole] = useState(null);
-  const [accountForms, setAccountForms] = useState({
-    staff: { name: "", email: "", password: "", department_id: "" },
-    management: { name: "", email: "", password: "", department_id: "" },
-  });
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState("");
-
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [priorityFilter, setPriorityFilter] = useState("all");
-  const [departmentFilter, setDepartmentFilter] = useState("all");
-  const [sortByPriority, setSortByPriority] = useState(true);
-
-  const fetchData = useCallback(async () => {
-    setIsLoading(true);
-    setError("");
-    try {
-      // GET /admin/complaints — all complaints, ComplaintOut schema,
-      // already ordered by priority_score desc on the backend.
-      // GET /admin/departments — [{ id, name, category }, ...]
-      const [complaintsRes, departmentsRes, staffRes, workloadRes] = await Promise.all([
-        api.get("/admin/complaints"),
-        api.get("/admin/departments"),
-        api.get("/admin/staff"),
-        api.get("/admin/staff-workload"),
-      ]);
-      setComplaints(complaintsRes.data);
-      setDepartments(departmentsRes.data);
-      setStaff(staffRes.data);
-      setWorkload(workloadRes.data);
-    } catch (err) {
-      const detail = err.response?.data?.detail;
-      setError(typeof detail === "string" ? detail : "Could not load complaints. Please try again.");
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
-
-  async function handleAssign(complaintId, staffId) {
-    setAssigningId(complaintId);
-    setAssignmentError("");
-    try {
-      const response = await api.patch(`/admin/complaints/${complaintId}/assign`, {
-        staff_id: staffId === "" ? null : Number(staffId),
-      });
-      setComplaints((current) =>
-        current.map((complaint) =>
-          complaint.id === complaintId ? response.data : complaint
-        )
-      );
-    } catch (err) {
-      setAssignmentError(err.response?.data?.detail || "Could not update assignment.");
-    } finally {
-      setAssigningId(null);
-    }
-  }
-
-  async function handleCreateAccount(role) {
-    const form = accountForms[role];
-    setCreatingRole(role);
-    setAccountError("");
-    setAccountMessage("");
-    try {
-      const response = await api.post(`/admin/${role}`, {
-        name: form.name,
-        email: form.email,
-        password: form.password,
-        ...(role === "staff" && form.department_id
-          ? { department_id: Number(form.department_id) }
-          : {}),
-      });
-      setAccountForms((current) => ({
-        ...current,
-        [role]: { name: "", email: "", password: "", department_id: "" },
-      }));
-      setAccountMessage(`${response.data.role} account created for ${response.data.email}.`);
-      await fetchData();
-    } catch (err) {
-      const detail = err.response?.data?.detail;
-      setAccountError(typeof detail === "string" ? detail : "Could not create the account.");
-    } finally {
-      setCreatingRole(null);
-    }
-  }
-
-  function updateAccountForm(role, field, value) {
-    setAccountForms((current) => ({
-      ...current,
-      [role]: { ...current[role], [field]: value },
-    }));
-  }
-
-  useEffect(() => {
-    queueMicrotask(() => void fetchData());
-  }, [fetchData]);
-
-  const departmentNameById = useMemo(() => {
-    const map = {};
-    departments.forEach((d) => {
-      map[d.id] = d.name;
-    });
-    return map;
-  }, [departments]);
-
-  const visibleComplaints = useMemo(() => {
-    let result = complaints.filter((c) => {
-      const statusOk = statusFilter === "all" || c.status === statusFilter;
-      const priorityOk = priorityFilter === "all" || matchesPriority(c.priority_score, priorityFilter);
-      const departmentOk =
-        departmentFilter === "all" ||
-        (departmentFilter === "unassigned"
-          ? c.department_id == null
-          : String(c.department_id) === departmentFilter);
-      return statusOk && priorityOk && departmentOk;
-    });
-
-    if (sortByPriority) {
-      result = [...result].sort((a, b) => (b.priority_score ?? -1) - (a.priority_score ?? -1));
-    }
-
-    return result;
-  }, [complaints, statusFilter, priorityFilter, departmentFilter, sortByPriority]);
-
+  const counts = Object.fromEntries(
+    (workload.data || []).map((item) => [
+      item.staff_id,
+      item.open_complaint_count,
+    ]),
+  );
+  const members = [...(staff.data || []), ...(management.data || [])].filter(
+    (item) =>
+      `${item.name} ${item.email}`
+        .toLowerCase()
+        .includes(query.trim().toLowerCase()),
+  );
   return (
-    <div className="min-h-screen bg-slate-50 p-6">
-      <header className="mb-6 flex items-start justify-between">
-        <div>
-          <h1 className="text-xl font-semibold text-slate-800">Admin Dashboard</h1>
-          <p className="text-sm text-slate-500 mt-0.5">All complaints across the system</p>
-        </div>
-        <Link
-          to="/admin/departments"
-          className="text-sm rounded-md border border-slate-300 px-3 py-1.5 font-medium text-slate-700 hover:bg-slate-100"
-        >
-          Manage Departments
-        </Link>
-      </header>
-
-      <section className="mb-6 rounded-lg bg-white p-4 shadow">
-        <h2 className="text-sm font-semibold text-slate-800">Account Management</h2>
-        <p className="mt-1 text-xs text-slate-500">
-          Only administrators can create Staff or Management accounts. The server assigns the role.
-        </p>
-        {(accountError || accountMessage) && (
-          <p className={`mt-3 text-sm ${accountError ? "text-red-600" : "text-green-600"}`} role="alert">
-            {accountError || accountMessage}
-          </p>
-        )}
-        <div className="mt-4 grid gap-4 lg:grid-cols-2">
-          {["staff", "management"].map((role) => {
-            const form = accountForms[role];
-            return (
-              <form
-                key={role}
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void handleCreateAccount(role);
-                }}
-                className="rounded-md border border-slate-200 p-3"
-              >
-                <h3 className="text-sm font-medium capitalize text-slate-700">
-                  Create {role}
-                </h3>
-                <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                  <input
-                    required
-                    value={form.name}
-                    onChange={(event) => updateAccountForm(role, "name", event.target.value)}
-                    placeholder="Full name"
-                    className="rounded-md border border-slate-300 px-3 py-2 text-sm"
-                  />
-                  <input
-                    required
-                    type="email"
-                    value={form.email}
-                    onChange={(event) => updateAccountForm(role, "email", event.target.value)}
-                    placeholder="Email"
-                    className="rounded-md border border-slate-300 px-3 py-2 text-sm"
-                  />
-                  <input
-                    required
-                    minLength={8}
-                    maxLength={72}
-                    type="password"
-                    value={form.password}
-                    onChange={(event) => updateAccountForm(role, "password", event.target.value)}
-                    placeholder="Temporary password"
-                    className="rounded-md border border-slate-300 px-3 py-2 text-sm"
-                  />
-                  {role === "staff" && (
-                    <select
-                      value={form.department_id}
-                      onChange={(event) => updateAccountForm(role, "department_id", event.target.value)}
-                      className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
-                    >
-                      <option value="">No department</option>
-                      {departments.map((department) => (
-                        <option key={department.id} value={department.id}>
-                          {department.name}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                </div>
-                <button
-                  type="submit"
-                  disabled={creatingRole === role}
-                  className="mt-3 rounded-md bg-slate-800 px-3 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-60"
-                >
-                  {creatingRole === role ? "Creating..." : `Create ${role}`}
-                </button>
-              </form>
-            );
-          })}
-        </div>
-      </section>
-
-      {/* Filters */}
-      <div className="flex flex-wrap items-end gap-3 mb-4">
-        <div>
-          <label className="block text-xs font-medium text-slate-500 mb-1">Status</label>
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="rounded-md border border-slate-300 px-3 py-1.5 text-sm bg-white"
-          >
-            <option value="all">All</option>
-            {STATUS_OPTIONS.map((s) => (
-              <option key={s} value={s}>
-                {s.replace("_", " ")}
-              </option>
-            ))}
-          </select>
-        </div>
-        {assignmentError && (
-          <p className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-            {assignmentError}
-          </p>
-        )}
-
-        <div>
-          <label className="block text-xs font-medium text-slate-500 mb-1">Priority</label>
-          <select
-            value={priorityFilter}
-            onChange={(e) => setPriorityFilter(e.target.value)}
-            className="rounded-md border border-slate-300 px-3 py-1.5 text-sm bg-white"
-          >
-            <option value="all">All</option>
-            {PRIORITY_OPTIONS.map((p) => (
-              <option key={p.value} value={p.value}>
-                {p.label}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div>
-          <label className="block text-xs font-medium text-slate-500 mb-1">Department</label>
-          <select
-            value={departmentFilter}
-            onChange={(e) => setDepartmentFilter(e.target.value)}
-            className="rounded-md border border-slate-300 px-3 py-1.5 text-sm bg-white"
-          >
-            <option value="all">All</option>
-            <option value="unassigned">Unassigned</option>
-            {departments.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.name}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <label className="flex items-center gap-2 text-sm text-slate-600 pb-1.5">
-          <input
-            type="checkbox"
-            checked={sortByPriority}
-            onChange={(e) => setSortByPriority(e.target.checked)}
-          />
-          Sort by priority
-        </label>
-
-        <button
-          onClick={fetchData}
-          disabled={isLoading}
-          className="rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-60"
-        >
-          {isLoading ? "Refreshing..." : "Refresh"}
-        </button>
-      </div>
-
-      {isLoading && (
-        <div className="bg-white rounded-lg shadow p-6 text-center text-sm text-slate-500">
-          Loading complaints...
-        </div>
-      )}
-
-      {!isLoading && error && (
-        <div className="bg-white rounded-lg shadow p-6 text-center">
-          <p className="text-sm text-red-600">{error}</p>
-          <button
-            onClick={fetchData}
-            className="mt-3 rounded-md bg-slate-800 text-white text-sm font-medium px-4 py-2 hover:bg-slate-700"
-          >
-            Try Again
-          </button>
-        </div>
-      )}
-
-      {!isLoading && !error && complaints.length === 0 && (
-        <div className="bg-white rounded-lg shadow p-6 text-center">
-          <p className="text-sm text-slate-500">No complaints have been filed yet.</p>
-        </div>
-      )}
-
-      {!isLoading && !error && (
-        <div className="mb-4 rounded-lg bg-white p-4 shadow">
-          <h2 className="text-sm font-semibold text-slate-800">Staff Workload</h2>
-          <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-            {[...workload].sort((a, b) => b.open_complaint_count - a.open_complaint_count).map((member) => (
-              <div key={member.staff_id} className="rounded-md border border-slate-200 p-3">
-                <p className="text-sm font-medium text-slate-800">{member.name}</p>
-                <p className="text-xs text-slate-500">{member.department || "No department"}</p>
-                <p className="mt-1 text-lg font-semibold text-orange-600">{member.open_complaint_count}</p>
-                <p className="text-[11px] text-slate-500">open complaints</p>
-              </div>
-            ))}
+    <div className="space-y-6">
+      <Card>
+        <div className="panel-heading">
+          <div>
+            <h2>Team directory</h2>
+            <p>Staff and management accounts across your workspace.</p>
           </div>
+          <Button variant="secondary" onClick={onCreate}>
+            <Icon name="plus" size={15} />
+            Add member
+          </Button>
         </div>
-      )}
-
-      {!isLoading && !error && complaints.length > 0 && visibleComplaints.length === 0 && (
-        <div className="bg-white rounded-lg shadow p-6 text-center">
-          <p className="text-sm text-slate-500">No complaints match the selected filters.</p>
+        <div className="toolbar">
+          <div className="search-field">
+            <Icon name="search" size={16} />
+            <input
+              className="input"
+              type="search"
+              aria-label="Search team members"
+              placeholder="Search name or email…"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </div>
+          <span className="text-xs text-slate-500">
+            {members.length} members shown
+          </span>
         </div>
-      )}
-
-      {!isLoading && !error && visibleComplaints.length > 0 && (
-        <div className="bg-white rounded-lg shadow overflow-hidden overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-100 text-slate-600 text-left">
-              <tr>
-                <th className="px-4 py-3 font-medium">ID</th>
-                <th className="px-4 py-3 font-medium">Title</th>
-                <th className="px-4 py-3 font-medium">Priority</th>
-                <th className="px-4 py-3 font-medium">Status</th>
-                <th className="px-4 py-3 font-medium">Department</th>
-                <th className="px-4 py-3 font-medium">Assigned Staff</th>
-                <th className="px-4 py-3 font-medium">Created</th>
-                <th className="px-4 py-3 font-medium"></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {visibleComplaints.map((c) => (
-                <tr key={c.id}>
-                  <td className="px-4 py-3 text-slate-500">#{c.id}</td>
-                  <td className="px-4 py-3 text-slate-800">{c.title}</td>
-                  <td className="px-4 py-3 text-slate-600">
-                    {c.priority_score != null ? c.priority_score.toFixed(2) : "—"}
-                  </td>
-                  <td className="px-4 py-3">
-                    <StatusBadge status={c.status} />
-                  </td>
-                  <td className="px-4 py-3 text-slate-600">
-                    {c.department_id != null
-                      ? departmentNameById[c.department_id] || `Dept #${c.department_id}`
-                      : "Unassigned"}
-                  </td>
-                  <td className="px-4 py-3">
-                    <select
-                      aria-label={`Assign complaint ${c.id}`}
-                      value={c.assigned_to ?? ""}
-                      disabled={assigningId === c.id}
-                      onChange={(e) => handleAssign(c.id, e.target.value)}
-                      className="max-w-48 rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-700 disabled:opacity-60"
-                    >
-                      <option value="">Unassigned</option>
-                      {[...staff]
-                        .sort(
-                          (a, b) =>
-                            Number(b.department_id === c.department_id) -
-                            Number(a.department_id === c.department_id)
-                        )
-                        .map((member) => (
-                          <option key={member.id} value={member.id}>
-                            {member.name}
-                            {member.department_id === c.department_id ? " (department)" : ""}
-                          </option>
-                        ))}
-                    </select>
-                  </td>
-                  <td className="px-4 py-3 text-slate-500">{formatDate(c.created_at)}</td>
-                  <td className="px-4 py-3 text-right">
-                    <Link
-                      to={`/complaints/${c.id}`}
-                      className="text-slate-800 font-medium hover:underline"
-                    >
-                      View
-                    </Link>
-                  </td>
-                </tr>
+        {staff.error && (
+          <div className="m-5">
+            <Alert variant="error">
+              {staff.error}{" "}
+              <button className="underline" onClick={staff.refresh}>
+                Retry staff
+              </button>
+            </Alert>
+          </div>
+        )}
+        {management.error && (
+          <div className="m-5">
+            <Alert variant="error">
+              {management.error}{" "}
+              <button className="underline" onClick={management.refresh}>
+                Retry management
+              </button>
+            </Alert>
+          </div>
+        )}
+        {staff.loading || management.loading ? (
+          <TableSkeleton />
+        ) : !members.length ? (
+          <EmptyState
+            icon="users"
+            title={
+              query ? "No matching team members" : "Bring your team together"
+            }
+            description={
+              query
+                ? "Try a different name or email address."
+                : "Create staff and management accounts to help resolve concerns."
+            }
+          />
+        ) : (
+          <ul className="divide-y divide-slate-100">
+            {members.map((item) => (
+              <li
+                key={item.id}
+                className="flex flex-wrap items-center gap-3 p-5"
+              >
+                <span className="avatar">{item.name.charAt(0)}</span>
+                <div className="min-w-0 flex-1">
+                  <p className="break-words text-sm font-medium text-slate-700">
+                    {item.name}
+                  </p>
+                  <p className="mt-1 break-all text-xs text-slate-500">
+                    {item.email}
+                  </p>
+                </div>
+                <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+                  <span className="hidden text-xs text-slate-500 sm:block">
+                    {item.role === "staff"
+                      ? names[item.department_id] || "No department"
+                      : "Workspace-wide"}
+                  </span>
+                  <Badge tone={item.role === "staff" ? "green" : "blue"}>
+                    {item.role}
+                  </Badge>
+                  {item.role === "staff" &&
+                    !workload.loading &&
+                    !workload.error && (
+                      <Badge>{counts[item.id] ?? 0} open</Badge>
+                    )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+      <Card>
+        <div className="panel-heading">
+          <div>
+            <h2>Staff workload</h2>
+            <p>
+              Open assignments for each staff member, including reopened
+              concerns.
+            </p>
+          </div>
+          <Button
+            variant="ghost"
+            className="icon-button"
+            disabled={workload.loading}
+            aria-label="Refresh staff workload"
+            onClick={workload.refresh}
+          >
+            <Icon name="refresh" size={16} />
+          </Button>
+        </div>
+        {workload.loading ? (
+          <TableSkeleton rows={3} />
+        ) : workload.error ? (
+          <ErrorState message={workload.error} onRetry={workload.refresh} />
+        ) : !workload.data?.length ? (
+          <EmptyState
+            icon="users"
+            title="No staff accounts yet"
+            description="Create a staff account to begin assigning concerns."
+          />
+        ) : (
+          <div className="grid gap-4 p-5 sm:grid-cols-2 xl:grid-cols-3">
+            {[...workload.data]
+              .sort((a, b) => b.open_complaint_count - a.open_complaint_count)
+              .map((item) => (
+                <div
+                  key={item.staff_id}
+                  className="rounded-xl border border-slate-200 p-4"
+                >
+                  <p className="text-sm font-medium text-slate-700">
+                    {item.name}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {item.department || "No department"}
+                  </p>
+                  <p className="mt-4 text-2xl font-semibold tracking-tight text-brand-900">
+                    {item.open_complaint_count}
+                    <span className="ml-2 text-xs font-normal text-slate-500">
+                      open concerns
+                    </span>
+                  </p>
+                </div>
               ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+          </div>
+        )}
+      </Card>
     </div>
   );
 }
 
-export default Admin;
+const INITIAL = { name: "", email: "", password: "", department: "" };
+export default function Admin() {
+  const complaints = usePagedResource("/admin/complaints");
+  const departments = useResource("/admin/departments", { collection: true });
+  const staff = useResource("/admin/staff", { collection: true });
+  const [tab, setTab] = useState("queue");
+  const [teamRevision, setTeamRevision] = useState(0);
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState("all");
+  const [priority, setPriority] = useState("all");
+  const [department, setDepartment] = useState("all");
+  const [sort, setSort] = useState("priority");
+  const [assigning, setAssigning] = useState(null);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [accountRole, setAccountRole] = useState("staff");
+  const [account, setAccount] = useState(INITIAL);
+  const [accountError, setAccountError] = useState("");
+  const [creating, setCreating] = useState(false);
+  const departmentNames = Object.fromEntries(
+    (departments.data || []).map((item) => [item.id, item.name]),
+  );
+  const visible = complaints.data
+    .filter(
+      (item) =>
+        (status === "all" || item.status === status) &&
+        (priority === "all" ||
+          matchesPriority(item.priority_score, priority)) &&
+        (department === "all" ||
+          (department === "unassigned"
+            ? item.department_id == null
+            : String(item.department_id) === department)) &&
+        `${item.id} ${item.title} ${item.category || ""}`
+          .toLowerCase()
+          .includes(query.trim().toLowerCase()),
+    )
+    .sort((a, b) =>
+      sort === "priority"
+        ? (b.priority_score ?? -1) - (a.priority_score ?? -1)
+        : new Date(b.created_at) - new Date(a.created_at),
+    );
+  const ready = !complaints.loading && !complaints.error;
+  function openAccount() {
+    setAccountOpen(true);
+    setAccount(INITIAL);
+    setAccountRole("staff");
+    setAccountError("");
+  }
+  async function assign(item, staffId) {
+    if (assigning != null || String(item.assigned_to ?? "") === staffId) return;
+    setAssigning(item.id);
+    setError("");
+    setSuccess("");
+    try {
+      const { data } = await api.patch(`/admin/complaints/${item.id}/assign`, {
+        staff_id: staffId === "" ? null : Number(staffId),
+      });
+      complaints.setData((current) =>
+        current.map((row) => (row.id === item.id ? data : row)),
+      );
+      setSuccess(`Assignment updated for complaint #${item.id}.`);
+      setTeamRevision((value) => value + 1);
+    } catch (requestError) {
+      setError(
+        getApiError(requestError, "We couldn’t update this assignment."),
+      );
+    } finally {
+      setAssigning(null);
+    }
+  }
+  function assignment(item) {
+    return (
+      <select
+        className="input !min-h-9 max-w-52 !py-1.5 !text-xs"
+        aria-label={`Assign complaint ${item.id}`}
+        value={item.assigned_to ?? ""}
+        disabled={assigning != null || staff.loading || Boolean(staff.error)}
+        onChange={(event) => assign(item, event.target.value)}
+      >
+        <option value="">Unassigned</option>
+        {item.assigned_to != null &&
+          !staff.data?.some((member) => member.id === item.assigned_to) && (
+            <option value={item.assigned_to}>Staff #{item.assigned_to}</option>
+          )}
+        {[...(staff.data || [])]
+          .sort(
+            (a, b) =>
+              Number(b.department_id === item.department_id) -
+              Number(a.department_id === item.department_id),
+          )
+          .map((member) => (
+            <option key={member.id} value={member.id}>
+              {member.name}
+              {member.department_id != null &&
+              member.department_id === item.department_id
+                ? " · Same department"
+                : ""}
+            </option>
+          ))}
+      </select>
+    );
+  }
+  async function createAccount(event) {
+    event.preventDefault();
+    if (creating) return;
+    setAccountError("");
+    if (!account.name.trim()) {
+      setAccountError("Enter the team member’s name.");
+      return;
+    }
+    if (
+      account.password.length < 8 ||
+      new TextEncoder().encode(account.password).length > 72
+    ) {
+      setAccountError(
+        "Use a password with at least 8 characters and no more than 72 bytes.",
+      );
+      return;
+    }
+    setCreating(true);
+    try {
+      const { data } = await api.post(`/admin/${accountRole}`, {
+        name: account.name.trim(),
+        email: account.email.trim(),
+        password: account.password,
+        ...(accountRole === "staff" && account.department
+          ? { department_id: Number(account.department) }
+          : {}),
+      });
+      setSuccess(
+        `${data.role || accountRole} account created for ${data.email || account.email.trim()}.`,
+      );
+      setAccountOpen(false);
+      setAccount(INITIAL);
+      if (accountRole === "staff") await staff.refresh();
+      setTeamRevision((value) => value + 1);
+    } catch (requestError) {
+      setAccountError(
+        getApiError(requestError, "We couldn’t create the account."),
+      );
+    } finally {
+      setCreating(false);
+    }
+  }
+  function resetFilters() {
+    setQuery("");
+    setStatus("all");
+    setPriority("all");
+    setDepartment("all");
+  }
+  return (
+    <div className="page-stack">
+      <PageHeader
+        eyebrow="Workspace operations"
+        title="Keep every concern moving."
+        description="Coordinate teams, manage assignments, and bring clarity to your resolution workflow."
+        actions={
+          <>
+            <Link className="btn btn-secondary" to="/admin/departments">
+              <Icon name="building" size={16} />
+              Departments
+            </Link>
+            <Button onClick={openAccount}>
+              <Icon name="plus" size={16} />
+              Add team member
+            </Button>
+          </>
+        }
+      />
+      {success && <Alert variant="success">{success}</Alert>}
+      {error && <Alert variant="error">{error}</Alert>}
+      <div className="stats-grid">
+        <StatCard
+          label="Complaints loaded"
+          value={ready ? complaints.data.length : null}
+          icon="file"
+          hint="Summaries cover the loaded queue"
+        />
+        <StatCard
+          label="Open concerns"
+          value={ready ? complaints.data.filter(isOpen).length : null}
+          icon="clock"
+          tone="amber"
+          hint="Pending, in progress, and reopened"
+        />
+        <StatCard
+          label="Awaiting assignment"
+          value={
+            ready
+              ? complaints.data.filter(
+                  (item) => isOpen(item) && item.assigned_to == null,
+                ).length
+              : null
+          }
+          icon="users"
+          tone="blue"
+          hint="Open concerns with no staff assigned"
+        />
+        <StatCard
+          label="Past SLA deadline"
+          value={ready ? complaints.data.filter(isOverdue).length : null}
+          icon="alertCircle"
+          tone="orange"
+          hint="Open concerns needing attention"
+        />
+      </div>
+      <Tabs
+        tabs={[
+          { id: "queue", label: "Complaint queue" },
+          { id: "team", label: "Team & workload" },
+        ]}
+        value={tab}
+        onChange={setTab}
+      />
+      <div
+        id={`panel-${tab}`}
+        role="tabpanel"
+        aria-labelledby={`tab-${tab}`}
+        tabIndex={0}
+      >
+        {tab === "team" ? (
+          <TeamPanel
+            key={teamRevision}
+            staff={staff}
+            departments={departments}
+            onCreate={openAccount}
+          />
+        ) : (
+          <Card>
+            <div className="panel-heading">
+              <div>
+                <h2>All complaints</h2>
+                <p>
+                  Find a concern, review its priority, and assign the right
+                  person.
+                </p>
+              </div>
+              <Button
+                variant="ghost"
+                className="!min-h-8 !px-2 !text-xs"
+                disabled={
+                  complaints.loading ||
+                  complaints.loadingMore ||
+                  assigning != null
+                }
+                onClick={complaints.refresh}
+              >
+                <Icon name="refresh" size={14} />
+                Refresh
+              </Button>
+            </div>
+            <div className="toolbar">
+              <div className="search-field">
+                <Icon name="search" size={16} />
+                <input
+                  className="input"
+                  type="search"
+                  aria-label="Search loaded complaints"
+                  placeholder="Search title, category, or ID…"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                />
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <select
+                  className="input filter-select"
+                  aria-label="Filter by status"
+                  value={status}
+                  onChange={(event) => setStatus(event.target.value)}
+                >
+                  <option value="all">All statuses</option>
+                  {STATUS_OPTIONS.map((value) => (
+                    <option key={value} value={value}>
+                      {value.replaceAll("_", " ")}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="input filter-select"
+                  aria-label="Filter by priority"
+                  value={priority}
+                  onChange={(event) => setPriority(event.target.value)}
+                >
+                  <option value="all">All priorities</option>
+                  {["critical", "high", "medium", "low"].map((value) => (
+                    <option key={value} value={value}>
+                      {value}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="input filter-select max-w-52"
+                  aria-label="Filter by department"
+                  value={department}
+                  onChange={(event) => setDepartment(event.target.value)}
+                  disabled={departments.loading || Boolean(departments.error)}
+                >
+                  <option value="all">All departments</option>
+                  <option value="unassigned">No department</option>
+                  {departments.data?.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.name}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="input filter-select"
+                  aria-label="Sort complaints"
+                  value={sort}
+                  onChange={(event) => setSort(event.target.value)}
+                >
+                  <option value="priority">Highest priority</option>
+                  <option value="recent">Newest first</option>
+                </select>
+              </div>
+            </div>
+            {complaints.hasMore && (
+              <p className="px-6 pb-3 text-[11px] text-slate-500">
+                Search, filters, and summaries cover {complaints.data.length}{" "}
+                loaded records. Load more to expand the queue.
+              </p>
+            )}
+            {departments.error && (
+              <div className="mx-5 mb-4">
+                <Alert variant="error">
+                  Department names are unavailable.{" "}
+                  <button className="underline" onClick={departments.refresh}>
+                    Retry
+                  </button>
+                </Alert>
+              </div>
+            )}
+            {staff.error && (
+              <div className="mx-5 mb-4">
+                <Alert variant="error">
+                  Assignment options are unavailable.{" "}
+                  <button className="underline" onClick={staff.refresh}>
+                    Retry staff
+                  </button>
+                </Alert>
+              </div>
+            )}
+            {complaints.loading ? (
+              <TableSkeleton />
+            ) : complaints.error && !complaints.data.length ? (
+              <ErrorState
+                message={complaints.error}
+                onRetry={complaints.retry}
+              />
+            ) : (
+              <>
+                {complaints.error && (
+                  <div className="m-5">
+                    <Alert variant="error">
+                      {complaints.error}{" "}
+                      <button className="underline" onClick={complaints.retry}>
+                        Retry
+                      </button>
+                    </Alert>
+                  </div>
+                )}
+                {!complaints.data.length ? (
+                  <EmptyState
+                    icon="file"
+                    title="No complaints yet"
+                    description="Submitted concerns will appear here, ready for your team to review."
+                  />
+                ) : (
+                  <ComplaintTable
+                    complaints={visible}
+                    departmentNameById={departmentNames}
+                    renderAssignment={assignment}
+                    emptyAction={
+                      <Button variant="secondary" onClick={resetFilters}>
+                        Clear filters
+                      </Button>
+                    }
+                  />
+                )}
+                <div className="pagination">
+                  <p>
+                    {visible.length} of {complaints.data.length} loaded
+                    complaints{!complaints.hasMore && " · All records loaded"}
+                  </p>
+                  <div className="flex gap-2">
+                    {(query ||
+                      status !== "all" ||
+                      priority !== "all" ||
+                      department !== "all") && (
+                      <Button variant="ghost" onClick={resetFilters}>
+                        Clear filters
+                      </Button>
+                    )}
+                    {complaints.hasMore && (
+                      <Button
+                        variant="secondary"
+                        onClick={complaints.loadMore}
+                        loading={complaints.loadingMore}
+                        disabled={assigning != null}
+                      >
+                        Load more
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
+          </Card>
+        )}
+      </div>
+      <Modal
+        open={accountOpen}
+        onClose={() => setAccountOpen(false)}
+        busy={creating}
+        title="Add a team member"
+        description="Create an account with the access this person needs."
+        footer={
+          <>
+            <Button
+              variant="secondary"
+              disabled={creating}
+              onClick={() => setAccountOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button type="submit" form="team-account" loading={creating}>
+              Create account
+            </Button>
+          </>
+        }
+      >
+        <form id="team-account" onSubmit={createAccount} className="space-y-4">
+          <Field label="Account role" htmlFor="account-role">
+            <select
+              id="account-role"
+              className="input"
+              value={accountRole}
+              onChange={(event) => setAccountRole(event.target.value)}
+              disabled={creating}
+            >
+              <option value="staff">Staff — resolve assigned concerns</option>
+              <option value="management">
+                Management — view analytics and priorities
+              </option>
+            </select>
+          </Field>
+          <Field label="Full name" htmlFor="account-name">
+            <input
+              id="account-name"
+              className="input"
+              required
+              maxLength={120}
+              autoComplete="off"
+              value={account.name}
+              onChange={(event) =>
+                setAccount((current) => ({
+                  ...current,
+                  name: event.target.value,
+                }))
+              }
+              disabled={creating}
+            />
+          </Field>
+          <Field label="Email address" htmlFor="account-email">
+            <input
+              id="account-email"
+              className="input"
+              type="email"
+              required
+              autoComplete="off"
+              value={account.email}
+              onChange={(event) =>
+                setAccount((current) => ({
+                  ...current,
+                  email: event.target.value,
+                }))
+              }
+              disabled={creating}
+            />
+          </Field>
+          <Field
+            label="Initial password"
+            htmlFor="account-password"
+            hint="Use at least 8 characters. Share credentials privately with the account owner."
+          >
+            <PasswordInput
+              id="account-password"
+              required
+              minLength={8}
+              maxLength={72}
+              autoComplete="new-password"
+              value={account.password}
+              onChange={(event) =>
+                setAccount((current) => ({
+                  ...current,
+                  password: event.target.value,
+                }))
+              }
+              disabled={creating}
+            />
+          </Field>
+          {accountRole === "staff" && (
+            <Field label="Department (optional)" htmlFor="account-department">
+              <select
+                id="account-department"
+                className="input"
+                value={account.department}
+                onChange={(event) =>
+                  setAccount((current) => ({
+                    ...current,
+                    department: event.target.value,
+                  }))
+                }
+                disabled={
+                  creating || departments.loading || Boolean(departments.error)
+                }
+              >
+                <option value="">No department</option>
+                {departments.data?.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
+          {accountError && <Alert variant="error">{accountError}</Alert>}
+        </form>
+      </Modal>
+    </div>
+  );
+}

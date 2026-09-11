@@ -1,342 +1,317 @@
-import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
-import api from "../services/api";
+﻿import { useState } from "react";
+import api, { getApiError } from "../services/api";
+import useResource from "../hooks/useResource";
+import Icon from "../components/Icon";
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  ErrorState,
+  Field,
+  Modal,
+  PageHeader,
+  TableSkeleton,
+} from "../components/ui";
 
-const emptyForm = { name: "", category: "" };
-
-function Departments() {
-  const [departments, setDepartments] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
+export default function Departments() {
+  const resource = useResource("/admin/departments", { collection: true });
+  const [query, setQuery] = useState("");
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState({ name: "", category: "" });
+  const [deleteTarget, setDeleteTarget] = useState(null);
   const [error, setError] = useState("");
-
-  // Add-department form
-  const [form, setForm] = useState(emptyForm);
-  const [formError, setFormError] = useState("");
-  const [isSaving, setIsSaving] = useState(false);
-  const [successMessage, setSuccessMessage] = useState("");
-
-  // Inline edit state: which department id is being edited, and its draft values
-  const [editingId, setEditingId] = useState(null);
-  const [editForm, setEditForm] = useState(emptyForm);
-  const [editError, setEditError] = useState("");
-  const [isUpdating, setIsUpdating] = useState(false);
-
-  // Delete confirmation
-  const [deleteTarget, setDeleteTarget] = useState(null); // department object, or null
-  const [isDeleting, setIsDeleting] = useState(false);
-  const [deleteError, setDeleteError] = useState("");
-
-  const fetchDepartments = useCallback(async () => {
-    setIsLoading(true);
+  const [success, setSuccess] = useState("");
+  const [busy, setBusy] = useState(false);
+  const visible = (resource.data || []).filter((item) =>
+    `${item.name} ${item.category}`
+      .toLowerCase()
+      .includes(query.trim().toLowerCase()),
+  );
+  function openEditor(department = { id: null, name: "", category: "" }) {
+    setEditing(department);
+    setForm({ name: department.name, category: department.category });
+    setError("");
+  }
+  async function save(event) {
+    event.preventDefault();
+    if (busy) return;
+    setError("");
+    if (!form.name.trim() || !form.category.trim()) {
+      setError("Enter both a department name and category keywords.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const payload = {
+        name: form.name.trim(),
+        category: form.category.trim(),
+      };
+      if (editing.id)
+        await api.put(`/admin/departments/${editing.id}`, payload);
+      else await api.post("/admin/departments", payload);
+      setSuccess(
+        `${payload.name} ${editing.id ? "updated" : "created"} successfully.`,
+      );
+      setEditing(null);
+      await resource.refresh();
+    } catch (requestError) {
+      setError(
+        getApiError(
+          requestError,
+          "We couldn’t save the department. Please try again.",
+        ),
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function remove() {
+    if (busy || !deleteTarget) return;
+    setBusy(true);
     setError("");
     try {
-      // GET /admin/departments -> [{ id, name, category }, ...]
-      const response = await api.get("/admin/departments");
-      setDepartments(response.data);
-    } catch (err) {
-      const detail = err.response?.data?.detail;
-      setError(typeof detail === "string" ? detail : "Could not load departments. Please try again.");
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    queueMicrotask(() => void fetchDepartments());
-  }, [fetchDepartments]);
-
-  function getErrorDetail(err, fallback) {
-    const detail = err.response?.data?.detail;
-    if (typeof detail === "string") return detail;
-    if (Array.isArray(detail) && detail.length > 0) return detail[0].msg || fallback;
-    return fallback;
-  }
-
-  async function handleCreate(e) {
-    e.preventDefault();
-    setFormError("");
-    setSuccessMessage("");
-
-    if (!form.name.trim() || !form.category.trim()) {
-      setFormError("Please fill in both name and category.");
-      return;
-    }
-
-    setIsSaving(true);
-    try {
-      // Matches DepartmentCreate exactly: { name, category }.
-      await api.post("/admin/departments", { name: form.name.trim(), category: form.category.trim() });
-      setForm(emptyForm);
-      setSuccessMessage(`Department "${form.name.trim()}" created.`);
-      await fetchDepartments();
-    } catch (err) {
-      setFormError(getErrorDetail(err, "Could not create the department. Please try again."));
-    } finally {
-      setIsSaving(false);
-    }
-  }
-
-  function startEdit(dept) {
-    setEditingId(dept.id);
-    setEditForm({ name: dept.name, category: dept.category });
-    setEditError("");
-  }
-
-  function cancelEdit() {
-    setEditingId(null);
-    setEditForm(emptyForm);
-    setEditError("");
-  }
-
-  async function handleUpdate(e, deptId) {
-    e.preventDefault();
-    setEditError("");
-
-    if (!editForm.name.trim() || !editForm.category.trim()) {
-      setEditError("Name and category can't be empty.");
-      return;
-    }
-
-    setIsUpdating(true);
-    try {
-      // Matches DepartmentUpdate: both fields optional, but we send both here.
-      await api.put(`/admin/departments/${deptId}`, {
-        name: editForm.name.trim(),
-        category: editForm.category.trim(),
-      });
-      setEditingId(null);
-      setSuccessMessage("Department updated.");
-      await fetchDepartments();
-    } catch (err) {
-      setEditError(getErrorDetail(err, "Could not update the department. Please try again."));
-    } finally {
-      setIsUpdating(false);
-    }
-  }
-
-  async function confirmDelete() {
-    if (!deleteTarget) return;
-    setDeleteError("");
-    setIsDeleting(true);
-    try {
       await api.delete(`/admin/departments/${deleteTarget.id}`);
-      setSuccessMessage(`Department "${deleteTarget.name}" deleted.`);
+      setSuccess(`${deleteTarget.name} has been deleted.`);
       setDeleteTarget(null);
-      await fetchDepartments();
-    } catch (err) {
-      setDeleteError(getErrorDetail(err, "Could not delete the department. Please try again."));
+      await resource.refresh();
+    } catch (requestError) {
+      setError(
+        getApiError(requestError, "We couldn’t delete this department."),
+      );
     } finally {
-      setIsDeleting(false);
+      setBusy(false);
     }
   }
-
   return (
-    <div className="min-h-screen bg-slate-50 p-6">
-      <header className="mb-6 flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-semibold text-slate-800">Department Management</h1>
-          <p className="text-sm text-slate-500 mt-0.5">
-            Departments used to auto-route classified complaints.
-          </p>
+    <div className="page-stack">
+      <PageHeader
+        eyebrow="Connect concerns with teams"
+        title="Departments"
+        description="Organize your teams and the categories used to route complaints."
+        actions={
+          <Button onClick={() => openEditor()}>
+            <Icon name="plus" size={16} />
+            Add department
+          </Button>
+        }
+      />
+      {success && <Alert variant="success">{success}</Alert>}
+      <Card>
+        <div className="panel-heading">
+          <div className="flex items-center gap-3">
+            <h2>Department directory</h2>
+            {resource.data && <Badge>{resource.data.length}</Badge>}
+          </div>
+          <Button
+            variant="ghost"
+            className="icon-button"
+            aria-label="Refresh departments"
+            disabled={resource.loading}
+            onClick={resource.refresh}
+          >
+            <Icon name="refresh" size={16} />
+          </Button>
         </div>
-        <Link to="/admin" className="text-sm text-slate-500 hover:underline">
-          ← Back to Admin Dashboard
-        </Link>
-      </header>
-
-      {successMessage && (
-        <p className="mb-4 text-sm text-green-700 bg-green-50 border border-green-200 rounded-md px-3 py-2">
-          {successMessage}
-        </p>
-      )}
-
-      {/* Add department form */}
-      <div className="bg-white rounded-lg shadow p-6 mb-6 max-w-lg">
-        <h2 className="text-sm font-semibold text-slate-800 mb-3">Add Department</h2>
-        <form onSubmit={handleCreate} className="space-y-3">
-          <div>
-            <label htmlFor="deptName" className="block text-xs font-medium text-slate-500 mb-1">
-              Name
-            </label>
+        <div className="toolbar">
+          <div className="search-field">
+            <Icon name="search" size={16} />
             <input
-              id="deptName"
-              type="text"
+              className="input"
+              type="search"
+              aria-label="Search departments"
+              placeholder="Search names or keywords…"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </div>
+          <span className="text-xs text-slate-500">
+            {visible.length} departments
+          </span>
+        </div>
+        {resource.loading ? (
+          <TableSkeleton />
+        ) : resource.error ? (
+          <ErrorState message={resource.error} onRetry={resource.refresh} />
+        ) : !visible.length ? (
+          <EmptyState
+            icon={query ? "search" : "building"}
+            title={
+              query
+                ? "No departments match"
+                : "Give every concern a destination"
+            }
+            description={
+              query
+                ? "Try another name or keyword."
+                : "Add your first department and the category keywords it handles."
+            }
+            action={
+              query ? (
+                <Button variant="secondary" onClick={() => setQuery("")}>
+                  Clear search
+                </Button>
+              ) : (
+                <Button onClick={() => openEditor()}>
+                  <Icon name="plus" size={16} />
+                  Add department
+                </Button>
+              )
+            }
+          />
+        ) : (
+          <div className="grid gap-4 border-t border-slate-100 p-4 sm:grid-cols-2 sm:p-6 xl:grid-cols-3">
+            {visible.map((item) => (
+              <article
+                key={item.id}
+                className="flex flex-col rounded-xl border border-slate-200 p-5 transition-shadow hover:shadow-sm"
+              >
+                <div className="flex items-start justify-between">
+                  <span className="grid h-10 w-10 place-items-center rounded-xl bg-brand-50 text-brand-600">
+                    <Icon name="building" size={21} />
+                  </span>
+                  <Badge>#{item.id}</Badge>
+                </div>
+                <h3 className="mt-4 break-words text-sm font-semibold text-slate-700">
+                  {item.name}
+                </h3>
+                <p className="mt-3 text-[10px] font-medium uppercase tracking-wider text-slate-500">
+                  Routing keywords
+                </p>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {item.category
+                    .split(",")
+                    .map((value) => value.trim())
+                    .filter(Boolean)
+                    .map((value, index) => (
+                      <span
+                        key={`${value}-${index}`}
+                        className="max-w-full break-words rounded-md bg-slate-50 px-2 py-1 text-[11px] text-slate-600"
+                      >
+                        {value}
+                      </span>
+                    ))}
+                </div>
+                <div className="mt-auto flex gap-2 pt-5">
+                  <Button
+                    variant="secondary"
+                    className="flex-1 !min-h-9 !px-2 !text-xs"
+                    onClick={() => openEditor(item)}
+                  >
+                    <Icon name="edit" size={14} />
+                    Edit
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    className="icon-button !min-h-9 text-red-600"
+                    aria-label={`Delete ${item.name}`}
+                    onClick={() => {
+                      setDeleteTarget(item);
+                      setError("");
+                    }}
+                  >
+                    <Icon name="trash" size={16} />
+                  </Button>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </Card>
+      <Modal
+        open={Boolean(editing)}
+        onClose={() => setEditing(null)}
+        busy={busy}
+        title={editing?.id ? "Edit department" : "Add a department"}
+        description="Use clear names and category keywords to help complaints reach the right team."
+        footer={
+          <>
+            <Button
+              variant="secondary"
+              disabled={busy}
+              onClick={() => setEditing(null)}
+            >
+              Cancel
+            </Button>
+            <Button type="submit" form="department-form" loading={busy}>
+              {editing?.id ? "Save changes" : "Create department"}
+            </Button>
+          </>
+        }
+      >
+        <form id="department-form" onSubmit={save} className="space-y-5">
+          <Field label="Department name" htmlFor="department-name">
+            <input
+              id="department-name"
+              className="input"
+              required
+              maxLength={120}
+              placeholder="e.g. Facilities & maintenance"
               value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
-              className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+              onChange={(event) =>
+                setForm((current) => ({ ...current, name: event.target.value }))
+              }
+              disabled={busy}
             />
-          </div>
-          <div>
-            <label htmlFor="deptCategory" className="block text-xs font-medium text-slate-500 mb-1">
-              Category keywords (comma-separated)
-            </label>
-            <input
-              id="deptCategory"
-              type="text"
-              placeholder="e.g. electricity,power,outage"
+          </Field>
+          <Field
+            label="Category keywords"
+            htmlFor="department-category"
+            hint="Separate keywords with commas, such as electricity, power, lighting."
+          >
+            <textarea
+              id="department-category"
+              className="input"
+              required
+              maxLength={500}
+              rows={3}
+              placeholder="electricity, power, lighting"
               value={form.category}
-              onChange={(e) => setForm({ ...form, category: e.target.value })}
-              className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+              onChange={(event) =>
+                setForm((current) => ({
+                  ...current,
+                  category: event.target.value,
+                }))
+              }
+              aria-describedby="department-category-hint"
+              disabled={busy}
             />
-          </div>
-
-          {formError && (
-            <p className="text-sm text-red-600" role="alert">
-              {formError}
-            </p>
-          )}
-
-          <button
-            type="submit"
-            disabled={isSaving}
-            className="rounded-md bg-slate-800 text-white text-sm font-medium px-4 py-2 hover:bg-slate-700 disabled:opacity-60 disabled:cursor-not-allowed"
-          >
-            {isSaving ? "Adding..." : "Add Department"}
-          </button>
+          </Field>
+          {error && <Alert variant="error">{error}</Alert>}
         </form>
-      </div>
-
-      {/* Departments list */}
-      {isLoading && (
-        <div className="bg-white rounded-lg shadow p-6 text-center text-sm text-slate-500">
-          Loading departments...
-        </div>
-      )}
-
-      {!isLoading && error && (
-        <div className="bg-white rounded-lg shadow p-6 text-center">
-          <p className="text-sm text-red-600">{error}</p>
-          <button
-            onClick={fetchDepartments}
-            className="mt-3 rounded-md bg-slate-800 text-white text-sm font-medium px-4 py-2 hover:bg-slate-700"
-          >
-            Try Again
-          </button>
-        </div>
-      )}
-
-      {!isLoading && !error && departments.length === 0 && (
-        <div className="bg-white rounded-lg shadow p-6 text-center">
-          <p className="text-sm text-slate-500">No departments have been created yet.</p>
-        </div>
-      )}
-
-      {!isLoading && !error && departments.length > 0 && (
-        <div className="bg-white rounded-lg shadow overflow-hidden max-w-3xl">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-100 text-slate-600 text-left">
-              <tr>
-                <th className="px-4 py-3 font-medium">ID</th>
-                <th className="px-4 py-3 font-medium">Name</th>
-                <th className="px-4 py-3 font-medium">Category Keywords</th>
-                <th className="px-4 py-3 font-medium"></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {departments.map((d) => (
-                <tr key={d.id}>
-                  {editingId === d.id ? (
-                    <td colSpan={4} className="px-4 py-3">
-                      <form onSubmit={(e) => handleUpdate(e, d.id)} className="flex flex-wrap items-start gap-2">
-                        <input
-                          type="text"
-                          value={editForm.name}
-                          onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
-                          className="rounded-md border border-slate-300 px-2 py-1 text-sm flex-1 min-w-[140px]"
-                        />
-                        <input
-                          type="text"
-                          value={editForm.category}
-                          onChange={(e) => setEditForm({ ...editForm, category: e.target.value })}
-                          className="rounded-md border border-slate-300 px-2 py-1 text-sm flex-1 min-w-[180px]"
-                        />
-                        <button
-                          type="submit"
-                          disabled={isUpdating}
-                          className="rounded-md bg-slate-800 text-white text-xs font-medium px-3 py-1.5 hover:bg-slate-700 disabled:opacity-60"
-                        >
-                          {isUpdating ? "Saving..." : "Save"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={cancelEdit}
-                          className="rounded-md border border-slate-300 text-xs font-medium px-3 py-1.5 hover:bg-slate-50"
-                        >
-                          Cancel
-                        </button>
-                        {editError && (
-                          <p className="w-full text-xs text-red-600 mt-1">{editError}</p>
-                        )}
-                      </form>
-                    </td>
-                  ) : (
-                    <>
-                      <td className="px-4 py-3 text-slate-500">#{d.id}</td>
-                      <td className="px-4 py-3 text-slate-800">{d.name}</td>
-                      <td className="px-4 py-3 text-slate-600">{d.category}</td>
-                      <td className="px-4 py-3 text-right whitespace-nowrap">
-                        <button
-                          onClick={() => startEdit(d)}
-                          className="text-slate-700 font-medium hover:underline mr-3"
-                        >
-                          Edit
-                        </button>
-                        <button
-                          onClick={() => {
-                            setDeleteError("");
-                            setDeleteTarget(d);
-                          }}
-                          className="text-red-600 font-medium hover:underline"
-                        >
-                          Delete
-                        </button>
-                      </td>
-                    </>
-                  )}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {/* Delete confirmation modal */}
-      {deleteTarget && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-lg shadow-lg p-6 max-w-sm w-full">
-            <h3 className="text-sm font-semibold text-slate-800">Delete department?</h3>
-            <p className="text-sm text-slate-600 mt-2">
-              Are you sure you want to delete <strong>{deleteTarget.name}</strong>? Any
-              complaints currently assigned to it will become unassigned. This can't be undone.
-            </p>
-
-            {deleteError && (
-              <p className="mt-3 text-sm text-red-600" role="alert">
-                {deleteError}
-              </p>
-            )}
-
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                onClick={() => setDeleteTarget(null)}
-                disabled={isDeleting}
-                className="rounded-md border border-slate-300 text-slate-700 text-sm font-medium px-4 py-2 hover:bg-slate-50 disabled:opacity-60"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={confirmDelete}
-                disabled={isDeleting}
-                className="rounded-md bg-red-600 text-white text-sm font-medium px-4 py-2 hover:bg-red-700 disabled:opacity-60"
-              >
-                {isDeleting ? "Deleting..." : "Delete"}
-              </button>
-            </div>
+      </Modal>
+      <Modal
+        open={Boolean(deleteTarget)}
+        onClose={() => setDeleteTarget(null)}
+        busy={busy}
+        title="Delete this department?"
+        description="This action cannot be undone."
+        footer={
+          <>
+            <Button
+              variant="secondary"
+              disabled={busy}
+              onClick={() => setDeleteTarget(null)}
+            >
+              Keep department
+            </Button>
+            <Button variant="danger" loading={busy} onClick={remove}>
+              Delete department
+            </Button>
+          </>
+        }
+      >
+        <p className="text-sm leading-7 text-slate-600">
+          <strong>{deleteTarget?.name}</strong> will be deleted. Complaints
+          currently routed to this department will have no department assigned.
+        </p>
+        {error && (
+          <div className="mt-4">
+            <Alert variant="error">{error}</Alert>
           </div>
-        </div>
-      )}
+        )}
+      </Modal>
     </div>
   );
 }
-
-export default Departments;

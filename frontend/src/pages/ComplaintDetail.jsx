@@ -1,771 +1,776 @@
-import { useCallback, useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
-import api from "../services/api";
-import { getRole, getHomeRouteForRole } from "../utils/auth";
+﻿import { useState } from "react";
+import { Link, useParams } from "react-router-dom";
+import api, { getApiError } from "../services/api";
+import { useAuth } from "../contexts/AuthContext";
+import useResource from "../hooks/useResource";
+import { getHomeRouteForRole } from "../utils/auth";
+import { formatDate, isOverdue } from "../utils/complaints";
+import Icon from "../components/Icon";
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  ErrorState,
+  Field,
+  Modal,
+  PageHeader,
+  PageSkeleton,
+  PriorityBadge,
+  StatusBadge,
+} from "../components/ui";
 
-function formatDateTime(isoString) {
-  if (!isoString) return "—";
-  return new Date(isoString).toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-const statusStyles = {
-  pending: "bg-yellow-100 text-yellow-800",
-  in_progress: "bg-blue-100 text-blue-800",
-  resolved: "bg-green-100 text-green-800",
-  rejected: "bg-red-100 text-red-800",
-  reopened: "bg-orange-100 text-orange-800",
-};
-
-function StatusBadge({ status }) {
-  const classes = statusStyles[status] || "bg-slate-100 text-slate-700";
-  return (
-    <span className={`inline-block rounded-full px-2.5 py-1 text-xs font-medium capitalize ${classes}`}>
-      {status ? status.replace("_", " ") : "—"}
-    </span>
-  );
-}
-
-const sentimentStyles = {
-  POSITIVE: "bg-green-100 text-green-800",
-  NEGATIVE: "bg-red-100 text-red-800",
-};
-
-// Small tag distinguishing an AI-set value from one an admin has
-// manually overridden — the visible half of the transparency requirement.
-function SourceTag({ overridden }) {
-  return overridden ? (
-    <span className="inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-amber-100 text-amber-800 ml-2">
-      Overridden
-    </span>
-  ) : (
-    <span className="inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-indigo-100 text-indigo-700 ml-2">
-      AI
-    </span>
-  );
-}
-
-// Mirrors VALID_TRANSITIONS in app/routers/complaints.py exactly.
-// Kept here (not fetched) since the backend doesn't expose this as
-// data — it's enforced server-side regardless of what's shown here;
-// this only decides which buttons make sense to offer.
-const VALID_TRANSITIONS = {
+const TRANSITIONS = {
   pending: ["in_progress", "rejected"],
   in_progress: ["resolved", "rejected"],
-  resolved: [],
   reopened: ["in_progress"],
+  resolved: [],
   rejected: [],
 };
-
-const STATUS_ACTION_LABELS = {
-  in_progress: "Mark In Progress",
-  resolved: "Mark Resolved",
-  rejected: "Reject",
+const ACTIONS = {
+  in_progress: "Mark in progress",
+  resolved: "Mark resolved",
+  rejected: "Reject complaint",
 };
 
-function ComplaintDetail() {
-  const { id } = useParams();
-  const navigate = useNavigate();
-  const role = getRole();
-  const canUpdateStatus = role === "staff" || role === "admin";
-  const isAdmin = role === "admin";
-
-  // Where "back" should go depends on who's viewing — the owner's
-  // own list, or a staff/admin's own dashboard.
-  const backHref = getHomeRouteForRole(role);
-
-  const [complaint, setComplaint] = useState(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState("");
-
-  const [updatingStatus, setUpdatingStatus] = useState(null); // which status is being submitted, or null
-  const [updateError, setUpdateError] = useState("");
-  const [updateSuccess, setUpdateSuccess] = useState("");
-  const [resolutionText, setResolutionText] = useState("");
-  const [suggestion, setSuggestion] = useState(null);
-  const [suggestionLoading, setSuggestionLoading] = useState(false);
-  const [suggestionError, setSuggestionError] = useState("");
-  const [showPriorityBreakdown, setShowPriorityBreakdown] = useState(false);
-  const [feedbackRating, setFeedbackRating] = useState(0);
-  const [feedbackComment, setFeedbackComment] = useState("");
-  const [feedbackError, setFeedbackError] = useState("");
-  const [feedbackSuccess, setFeedbackSuccess] = useState("");
-  const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false);
-
-  // Admin override panel state
-  const [departments, setDepartments] = useState([]);
-  const [overrideDepartmentId, setOverrideDepartmentId] = useState("");
-  const [overridePriorityScore, setOverridePriorityScore] = useState("");
-  const [isOverriding, setIsOverriding] = useState(false);
+function Detail({ id }) {
+  const { user, role } = useAuth();
+  const resource = useResource(`/complaints/${id}`);
+  const complaint = resource.data;
+  const departments = useResource("/admin/departments", {
+    enabled: role === "admin",
+    collection: true,
+  });
+  const suggestion = useResource(`/complaints/${id}/suggested-resolution`, {
+    enabled: false,
+    timeout: 120000,
+  });
+  const [resolution, setResolution] = useState("");
+  const [pendingStatus, setPendingStatus] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState("");
+  const [success, setSuccess] = useState("");
+  const [rating, setRating] = useState("");
+  const [comment, setComment] = useState("");
+  const [feedbackSent, setFeedbackSent] = useState(false);
+  const [overrideOpen, setOverrideOpen] = useState(false);
+  const [override, setOverride] = useState({ department: "", priority: "" });
+  const [review, setReview] = useState(null);
   const [overrideError, setOverrideError] = useState("");
-  const [overrideSuccess, setOverrideSuccess] = useState("");
-  const [pendingOverride, setPendingOverride] = useState(null); // { department_id?, priority_score?, summary[] } | null
+  const canAct =
+    role === "admin" ||
+    (role === "staff" && complaint?.assigned_to === user?.id);
+  const canFeedback =
+    complaint?.created_by === user?.id &&
+    complaint?.status === "resolved" &&
+    !feedbackSent;
+  const departmentName =
+    complaint?.department_id == null
+      ? "Not assigned"
+      : departments.data?.find((item) => item.id === complaint.department_id)
+          ?.name || `Department #${complaint.department_id}`;
 
-  // Validate the :id param itself before ever calling the API —
-  // covers someone typing /complaints/abc directly in the URL.
-  const isValidId = /^\d+$/.test(id);
-
-  const fetchComplaint = useCallback(async () => {
-    setIsLoading(true);
-    setError("");
+  async function changeStatus(nextStatus) {
+    if (busy) return;
+    setBusy(true);
+    setActionError("");
+    setSuccess("");
     try {
-      // Matches the backend's ComplaintOut schema exactly. Note: the
-      // backend does not return updated_at, sentiment_score, or any
-      // similar-issue data on this endpoint, so those are not shown.
-      const response = await api.get(`/complaints/${id}`);
-      setComplaint(response.data);
-    } catch (err) {
-      const status = err.response?.status;
-      if (status === 404) {
-        setError("This complaint doesn't exist.");
-      } else if (status === 403) {
-        setError("You're not authorized to view this complaint.");
-      } else {
-        const detail = err.response?.data?.detail;
-        setError(typeof detail === "string" ? detail : "Could not load this complaint. Please try again.");
-      }
-    } finally {
-      setIsLoading(false);
-    }
-  }, [id]);
-
-  useEffect(() => {
-    queueMicrotask(() => {
-      if (isValidId) void fetchComplaint();
-    });
-  }, [isValidId, fetchComplaint]);
-
-  // Admin-only: load departments for the override dropdown.
-  useEffect(() => {
-    if (!isAdmin) return;
-    api
-      .get("/admin/departments")
-      .then((res) => setDepartments(res.data))
-      .catch(() => {
-        // Non-fatal — the override form just won't have department names/options.
+      const { data } = await api.patch(`/complaints/${id}/status`, {
+        status: nextStatus,
+        ...(nextStatus === "resolved" && resolution.trim()
+          ? { resolution_text: resolution.trim() }
+          : {}),
       });
-  }, [isAdmin]);
-
-  useEffect(() => {
-    queueMicrotask(() => {
-      if (!canUpdateStatus || !isValidId) return;
-      setSuggestionLoading(true);
-      setSuggestionError("");
-      void api
-        .get(`/complaints/${id}/suggested-resolution`)
-        .then((response) => setSuggestion(response.data))
-        .catch((err) => {
-          const detail = err.response?.data?.detail;
-          setSuggestionError(typeof detail === "string" ? detail : "Could not load suggestions.");
-        })
-        .finally(() => setSuggestionLoading(false));
-    });
-  }, [canUpdateStatus, id, isValidId]);
-
-  // Pre-fill the override form with the complaint's current values once loaded.
-  useEffect(() => {
-    queueMicrotask(() => {
-      if (!complaint) return;
-      setOverrideDepartmentId(complaint.department_id != null ? String(complaint.department_id) : "");
-      setOverridePriorityScore(complaint.priority_score != null ? String(complaint.priority_score) : "");
-    });
-  }, [complaint]);
-
-  async function handleStatusUpdate(newStatus) {
-    setUpdateError("");
-    setUpdateSuccess("");
-    setUpdatingStatus(newStatus);
-
-    try {
-      const payload = { status: newStatus };
-      if (newStatus === "resolved" && resolutionText.trim()) {
-        payload.resolution_text = resolutionText.trim();
-      }
-      await api.patch(`/complaints/${id}/status`, payload);
-      setUpdateSuccess(`Status updated to "${newStatus.replace("_", " ")}".`);
-      if (newStatus === "resolved") setResolutionText("");
-      // Refresh so the page reflects the backend's actual current state
-      // (and the new set of valid next transitions) rather than assuming.
-      await fetchComplaint();
-    } catch (err) {
-      const status = err.response?.status;
-      const detail = err.response?.data?.detail;
-      if (status === 400 && typeof detail === "string") {
-        // e.g. "Invalid status transition: pending -> resolved"
-        setUpdateError(detail);
-      } else if (status === 403) {
-        setUpdateError("You're not authorized to update this complaint's status.");
-      } else if (typeof detail === "string") {
-        setUpdateError(detail);
-      } else {
-        setUpdateError("Could not update the status. Please try again.");
-      }
+      resource.setData(data);
+      setPendingStatus(null);
+      setResolution("");
+      setSuccess(`Complaint marked ${nextStatus.replaceAll("_", " ")}.`);
+    } catch (error) {
+      setActionError(
+        getApiError(error, "We couldn’t update the status. Please try again."),
+      );
     } finally {
-      setUpdatingStatus(null);
+      setBusy(false);
     }
   }
-
-  function handleOverrideFormSubmit(e) {
-    e.preventDefault();
-    setOverrideError("");
-    setOverrideSuccess("");
-
-    const currentDeptId = complaint.department_id != null ? String(complaint.department_id) : "";
-    const departmentChanged = overrideDepartmentId !== currentDeptId;
-
-    const parsedPriority = overridePriorityScore === "" ? null : Number(overridePriorityScore);
-    const priorityChanged =
-      parsedPriority !== null &&
-      (complaint.priority_score == null || Math.abs(parsedPriority - complaint.priority_score) > 0.001);
-
-    if (!departmentChanged && !priorityChanged) {
-      setOverrideError("Change the department or priority score before saving.");
-      return;
-    }
-
-    if (parsedPriority !== null && (parsedPriority < 0 || parsedPriority > 100)) {
-      setOverrideError("Priority score must be between 0 and 100.");
-      return;
-    }
-
-    const payload = {};
-    const summary = [];
-
-    if (departmentChanged) {
-      payload.department_id = overrideDepartmentId === "" ? null : Number(overrideDepartmentId);
-      const oldName =
-        complaint.department_id != null
-          ? departments.find((d) => d.id === complaint.department_id)?.name || `#${complaint.department_id}`
-          : "Unassigned";
-      const newName =
-        payload.department_id != null
-          ? departments.find((d) => d.id === payload.department_id)?.name || `#${payload.department_id}`
-          : "Unassigned";
-      summary.push(`Department: ${oldName} → ${newName}`);
-    }
-
-    if (priorityChanged) {
-      payload.priority_score = parsedPriority;
-      const oldScore = complaint.priority_score != null ? complaint.priority_score.toFixed(2) : "unscored";
-      summary.push(`Priority: ${oldScore} → ${parsedPriority.toFixed(2)}`);
-    }
-
-    // Backend genuinely requires department_id to be a real department's
-    // id (it 404s on an unknown one) — it doesn't support clearing a
-    // department back to "unassigned" via this endpoint. Block that
-    // client-side with a clear message rather than letting it 404.
-    if (departmentChanged && payload.department_id == null) {
-      setOverrideError("The backend doesn't support clearing a department back to unassigned via override — pick a real department instead.");
-      return;
-    }
-
-    setPendingOverride({ payload, summary });
-  }
-
-  async function confirmOverride() {
-    if (!pendingOverride) return;
-    setIsOverriding(true);
-    setOverrideError("");
-    try {
-      // Matches ComplaintOverride exactly: { department_id?, priority_score? }.
-      await api.patch(`/complaints/${id}/override`, pendingOverride.payload);
-      setOverrideSuccess("Override saved.");
-      setPendingOverride(null);
-      await fetchComplaint();
-    } catch (err) {
-      const status = err.response?.status;
-      const detail = err.response?.data?.detail;
-      if (status === 404 && typeof detail === "string") {
-        setOverrideError(detail);
-      } else if (status === 400 && typeof detail === "string") {
-        setOverrideError(detail);
-      } else if (status === 403) {
-        setOverrideError("You're not authorized to override this complaint.");
-      } else {
-        setOverrideError("Could not save the override. Please try again.");
-      }
-    } finally {
-      setIsOverriding(false);
-    }
-  }
-
-  async function handleFeedbackSubmit(event) {
+  async function sendFeedback(event) {
     event.preventDefault();
-    setFeedbackError("");
-    setFeedbackSuccess("");
-
-    if (!feedbackRating) {
-      setFeedbackError("Please select a rating from 1 to 5.");
+    if (busy) return;
+    setActionError("");
+    setSuccess("");
+    if (!rating) {
+      setActionError("Choose a rating before submitting your feedback.");
       return;
     }
-
-    setIsSubmittingFeedback(true);
+    setBusy(true);
     try {
       await api.post(`/complaints/${id}/feedback`, {
-        rating: feedbackRating,
-        comment: feedbackComment.trim() || null,
+        rating: Number(rating),
+        comment: comment.trim() || null,
       });
-      setFeedbackSuccess("Thank you. Your feedback has been recorded.");
-      setFeedbackRating(0);
-      setFeedbackComment("");
-      await fetchComplaint();
-    } catch (err) {
-      const detail = err.response?.data?.detail;
-      setFeedbackError(typeof detail === "string" ? detail : "Could not submit feedback. Please try again.");
+      setFeedbackSent(true);
+      setSuccess(
+        Number(rating) <= 2
+          ? "Thank you for your feedback. Your complaint has been reopened for another review."
+          : "Thank you. Your feedback has been recorded.",
+      );
+      // Feedback does not return a complaint; refresh to receive any reopened
+      // status, recalculated priority, and escalation from the backend.
+      await resource.refresh();
+    } catch (error) {
+      setActionError(
+        getApiError(error, "We couldn’t submit feedback. Please try again."),
+      );
     } finally {
-      setIsSubmittingFeedback(false);
+      setBusy(false);
+    }
+  }
+  function openOverride() {
+    setOverride({
+      department:
+        complaint.department_id == null ? "" : String(complaint.department_id),
+      priority:
+        complaint.priority_score == null
+          ? ""
+          : String(complaint.priority_score),
+    });
+    setReview(null);
+    setOverrideError("");
+    setOverrideOpen(true);
+  }
+  function reviewOverride(event) {
+    event.preventDefault();
+    setOverrideError("");
+    const payload = {};
+    const summary = [];
+    if (
+      override.department !==
+      (complaint.department_id == null ? "" : String(complaint.department_id))
+    ) {
+      if (!override.department) {
+        setOverrideError(
+          "Choose a department. An existing department cannot be cleared here.",
+        );
+        return;
+      }
+      payload.department_id = Number(override.department);
+      summary.push(
+        `Department: ${departmentName} → ${departments.data?.find((item) => item.id === payload.department_id)?.name || `#${payload.department_id}`}`,
+      );
+    }
+    if (
+      override.priority !== "" &&
+      Number(override.priority) !== complaint.priority_score
+    ) {
+      const value = Number(override.priority);
+      if (!Number.isFinite(value) || value < 0 || value > 100) {
+        setOverrideError("Priority must be a number from 0 to 100.");
+        return;
+      }
+      payload.priority_score = value;
+      summary.push(
+        `Priority: ${complaint.priority_score ?? "Unscored"} → ${value}`,
+      );
+    }
+    if (!Object.keys(payload).length) {
+      setOverrideError("Change the department or priority before continuing.");
+      return;
+    }
+    setReview({ payload, summary });
+  }
+  async function confirmOverride() {
+    if (busy) return;
+    setBusy(true);
+    setOverrideError("");
+    try {
+      const { data } = await api.patch(
+        `/complaints/${id}/override`,
+        review.payload,
+      );
+      resource.setData(data);
+      setOverrideOpen(false);
+      setReview(null);
+      setSuccess("The department and priority changes have been saved.");
+    } catch (error) {
+      setOverrideError(getApiError(error, "We couldn’t save these changes."));
+    } finally {
+      setBusy(false);
     }
   }
 
-
-  if (!isValidId) {
+  if (resource.loading && !complaint) return <PageSkeleton />;
+  if (!complaint)
     return (
-      <div className="bg-white rounded-lg shadow p-6 text-center">
-        <p className="text-sm text-red-600">
-          "{id}" isn't a valid complaint ID.
-        </p>
-        <button
-          onClick={() => navigate(backHref)}
-          className="mt-3 rounded-md bg-slate-800 text-white text-sm font-medium px-4 py-2 hover:bg-slate-700"
-        >
-          Back
-        </button>
-      </div>
-
-    );
-  }
-
-  if (isLoading) {
-    return (
-      <div className="bg-white rounded-lg shadow p-6 text-center text-sm text-slate-500">
-        Loading complaint #{id}...
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="bg-white rounded-lg shadow p-6 text-center">
-        <p className="text-sm text-red-600">{error}</p>
-        <div className="mt-3 flex justify-center gap-3">
-          <button
-            onClick={fetchComplaint}
-            className="rounded-md bg-slate-800 text-white text-sm font-medium px-4 py-2 hover:bg-slate-700"
-          >
-            Try Again
-          </button>
-          <button
-            onClick={() => navigate(backHref)}
-            className="rounded-md border border-slate-300 text-slate-700 text-sm font-medium px-4 py-2 hover:bg-slate-50"
-          >
-            Back
-          </button>
+      <Card>
+        <ErrorState
+          message={resource.error || "This complaint is not available."}
+          onRetry={resource.refresh}
+        />
+        <div className="pb-6 text-center">
+          <Link className="btn btn-secondary" to={getHomeRouteForRole(role)}>
+            Back to workspace
+          </Link>
         </div>
-      </div>
+      </Card>
     );
-  }
-
   return (
-    <div className="max-w-2xl mx-auto space-y-4">
-      {/* Core complaint information, as entered/tracked by the system */}
-      <div className="bg-white rounded-lg shadow p-6">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <p className="text-xs text-slate-400">Complaint #{complaint.id}</p>
-            <h1 className="text-xl font-semibold text-slate-800 mt-0.5">
-              {complaint.title}
-            </h1>
-          </div>
-          <StatusBadge status={complaint.status} />
-        </div>
-
-        <p className="mt-4 text-sm text-slate-600 whitespace-pre-wrap">
-          {complaint.description}
-        </p>
-
-        <dl className="mt-4 grid grid-cols-2 gap-y-2 text-sm border-t border-slate-100 pt-4">
-          <dt className="text-slate-500">Created</dt>
-          <dd className="text-right text-slate-700">{formatDateTime(complaint.created_at)}</dd>
-        </dl>
-      </div>
-
-      {/* AI-derived information, visually separated for transparency */}
-      <div className="bg-indigo-50 border border-indigo-100 rounded-lg p-6">
-        <div className="flex items-center gap-2 mb-4">
-          <span className="text-lg">🤖</span>
-          <h2 className="text-sm font-semibold text-indigo-900">
-            AI-Derived Insights
-          </h2>
-        </div>
-        <p className="text-xs text-indigo-700/80 -mt-3 mb-4">
-          Automatically generated by SmartResolve's classification, sentiment,
-          and priority-scoring pipeline when this complaint was submitted.
-        </p>
-
-        <dl className="grid grid-cols-2 gap-y-3 text-sm">
-          <dt className="text-indigo-900/70">Category</dt>
-          <dd className="text-right text-indigo-950 capitalize font-medium">
-            {complaint.category || "Not yet classified"}
-          </dd>
-
-          <dt className="text-indigo-900/70">Priority Score</dt>
-          <dd className="text-right text-indigo-950 font-medium">
-            {complaint.priority_score != null
-              ? complaint.priority_score.toFixed(2)
-              : "Not yet scored"}
-            <SourceTag overridden={complaint.priority_overridden} />
-          </dd>
-
-          <dt className="text-indigo-900/70">Sentiment</dt>
-          <dd className="text-right">
-            {complaint.sentiment_label ? (
-              <span
-                className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium capitalize ${
-                  sentimentStyles[complaint.sentiment_label] || "bg-slate-100 text-slate-700"
-                }`}
-              >
-                {complaint.sentiment_label.toLowerCase()}
-              </span>
-            ) : (
-              <span className="text-indigo-950/60">Not yet analyzed</span>
-            )}
-          </dd>
-
-          <dt className="text-indigo-900/70">Department</dt>
-          <dd className="text-right text-indigo-950 font-medium">
-            {complaint.department_id != null
-              ? departments.find((d) => d.id === complaint.department_id)?.name ||
-                `Department #${complaint.department_id}`
-              : "Not yet assigned"}
-            <SourceTag overridden={complaint.department_overridden} />
-          </dd>
-
-          <dt className="text-indigo-900/70">Escalation Level</dt>
-          <dd className="text-right text-indigo-950 font-medium">
-            {complaint.escalation_level}
-          </dd>
-        </dl>
-
-        {/*
-          Note: the backend's GET /complaints/{id} response does not
-          currently include similar-issue matches (repeat_count is
-          computed internally at submission time but isn't exposed
-          on this endpoint), so that section isn't rendered here.
-        */}
-      </div>
-
-      {role === "user" && complaint.status === "resolved" && (
-        <div className="bg-white rounded-lg shadow p-6">
-          <h2 className="text-sm font-semibold text-slate-800">Share your feedback</h2>
-          <p className="mt-1 text-xs text-slate-500">
-            Tell us how well this complaint was resolved.
-          </p>
-          <form onSubmit={handleFeedbackSubmit} className="mt-4 space-y-4">
-            <fieldset>
-              <legend className="text-xs font-medium text-slate-700">Rating</legend>
-              <div className="mt-2 flex gap-2" role="radiogroup" aria-label="Resolution rating">
-                {[1, 2, 3, 4, 5].map((rating) => (
-                  <button
-                    key={rating}
-                    type="button"
-                    role="radio"
-                    aria-checked={feedbackRating === rating}
-                    aria-label={`${rating} out of 5`}
-                    onClick={() => setFeedbackRating(rating)}
-                    className={`rounded-md border px-3 py-2 text-sm font-semibold ${
-                      feedbackRating === rating
-                        ? "border-brand-600 bg-brand-600 text-white"
-                        : "border-slate-300 text-slate-600 hover:bg-slate-50"
-                    }`}
-                  >
-                    {rating}
-                  </button>
-                ))}
-              </div>
-            </fieldset>
-            <label className="block">
-              <span className="text-xs font-medium text-slate-700">Comment (optional)</span>
-              <textarea
-                value={feedbackComment}
-                onChange={(event) => setFeedbackComment(event.target.value)}
-                maxLength={2000}
-                rows={3}
-                placeholder="What could we improve?"
-                className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-              />
-            </label>
-            <button
-              type="submit"
-              disabled={isSubmittingFeedback}
-              className="rounded-md bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {isSubmittingFeedback ? "Submitting..." : "Submit feedback"}
-            </button>
-            {feedbackSuccess && (
-              <p className="rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">
-                {feedbackSuccess}
-              </p>
-            )}
-            {feedbackError && (
-              <p role="alert" className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
-                {feedbackError}
-              </p>
-            )}
-          </form>
-        </div>
+    <div className="page-stack">
+      <Link
+        className="inline-flex w-fit items-center gap-2 text-xs text-slate-500 hover:text-brand-600"
+        to={getHomeRouteForRole(role)}
+      >
+        <Icon name="arrowLeft" size={15} />
+        Back to workspace
+      </Link>
+      <PageHeader
+        eyebrow={`Complaint #${complaint.id}`}
+        title={complaint.title}
+        description={`Submitted ${formatDate(complaint.created_at, { time: true })}`}
+        actions={<StatusBadge status={complaint.status} />}
+      />
+      {success && <Alert variant="success">{success}</Alert>}
+      {actionError && !pendingStatus && (
+        <Alert variant="error">{actionError}</Alert>
       )}
-
-      <div className="bg-white rounded-lg shadow p-6">
-        <button
-          type="button"
-          onClick={() => setShowPriorityBreakdown((visible) => !visible)}
-          className="flex w-full items-center justify-between text-left"
-        >
-          <span className="text-sm font-semibold text-slate-800">Why this priority?</span>
-          <span className="text-xs text-slate-500">{showPriorityBreakdown ? "Hide" : "Show"}</span>
-        </button>
-        {showPriorityBreakdown && (
-          <div className="mt-4 space-y-3">
-            {(complaint.priority_breakdown?.components || [])
-              .slice()
-              .sort((a, b) => b.contribution - a.contribution)
-              .map((component) => (
-                <div key={component.name}>
-                  <div className="flex justify-between text-xs text-slate-600">
-                    <span className="capitalize">{component.name.replace("_", " ")}</span>
-                    <span>{component.contribution.toFixed(2)} points</span>
-                  </div>
-                  <div className="mt-1 h-2 rounded-full bg-slate-100">
-                    <div
-                      className="h-2 rounded-full bg-indigo-500"
-                      style={{ width: `${Math.min(component.contribution, 100)}%` }}
-                    />
-                  </div>
-                  <p className="mt-1 text-[11px] text-slate-500">
-                    Raw value: {component.raw_value} · Weight: {(component.weight * 100).toFixed(0)}%
+      {resource.error && (
+        <Alert variant="error">
+          {resource.error}{" "}
+          <button className="underline" onClick={resource.refresh}>
+            Refresh details
+          </button>
+        </Alert>
+      )}
+      {complaint.status === "reopened" && (
+        <Alert>This complaint is open again and awaiting further action.</Alert>
+      )}
+      <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1.7fr)_minmax(280px,1fr)]">
+        <div className="space-y-6">
+          <Card>
+            <div className="panel-heading">
+              <h2>What was reported</h2>
+              <Icon name="file" size={18} className="text-slate-400" />
+            </div>
+            <div className="p-6">
+              <p className="whitespace-pre-wrap text-sm leading-7 text-slate-600">
+                {complaint.description}
+              </p>
+            </div>
+          </Card>
+          {canAct && (
+            <Card>
+              <div className="panel-heading">
+                <div>
+                  <h2>Move this concern forward</h2>
+                  <p>Update the status as work progresses.</p>
+                </div>
+                <Icon name="checkCircle" size={19} className="text-brand-500" />
+              </div>
+              <div className="space-y-5 p-6">
+                {(TRANSITIONS[complaint.status] || []).length === 0 ? (
+                  <p className="text-sm text-slate-500">
+                    No further status changes are available for this complaint.
                   </p>
+                ) : (
+                  <>
+                    {TRANSITIONS[complaint.status].includes("resolved") && (
+                      <Field
+                        label="Resolution note (optional)"
+                        htmlFor="resolution"
+                        hint="Share the action taken. Clear notes can help with similar concerns in the future."
+                      >
+                        <textarea
+                          id="resolution"
+                          className="input"
+                          rows={4}
+                          maxLength={5000}
+                          placeholder="What did you do to resolve this concern?"
+                          value={resolution}
+                          onChange={(event) =>
+                            setResolution(event.target.value)
+                          }
+                          disabled={busy}
+                        />
+                      </Field>
+                    )}
+                    <div className="flex flex-wrap gap-3">
+                      {TRANSITIONS[complaint.status].map((next) => (
+                        <Button
+                          key={next}
+                          variant={
+                            next === "rejected" ? "secondary" : "primary"
+                          }
+                          disabled={busy}
+                          onClick={() => {
+                            setActionError("");
+                            if (next === "in_progress") void changeStatus(next);
+                            else setPendingStatus(next);
+                          }}
+                        >
+                          <Icon
+                            name={next === "rejected" ? "x" : "checkCircle"}
+                            size={16}
+                          />
+                          {ACTIONS[next]}
+                        </Button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            </Card>
+          )}
+          {canAct && (
+            <Card className="border-brand-100">
+              <div className="panel-heading">
+                <div>
+                  <h2 className="flex items-center gap-2">
+                    <Icon
+                      name="sparkles"
+                      size={17}
+                      className="text-brand-500"
+                    />
+                    Resolution guidance
+                  </h2>
+                  <p>Learn from similar concerns resolved in the past.</p>
+                </div>
+              </div>
+              <div className="space-y-4 p-6">
+                <p className="text-xs leading-6 text-slate-500">
+                  Suggestions are advisory. Review the context and decide what
+                  is appropriate for this complaint.
+                </p>
+                {!suggestion.data && (
+                  <Button
+                    variant="secondary"
+                    loading={suggestion.loading}
+                    onClick={suggestion.refresh}
+                  >
+                    <Icon name="sparkles" size={16} />
+                    {suggestion.loading
+                      ? "Finding guidance…"
+                      : "Find resolution guidance"}
+                  </Button>
+                )}
+                {suggestion.error && (
+                  <Alert variant="error">{suggestion.error}</Alert>
+                )}
+                {suggestion.data && (
+                  <>
+                    {!suggestion.data.retrieved_cases?.length && (
+                      <EmptyState
+                        icon="file"
+                        title="No similar resolutions yet"
+                        description="There isn’t enough matching resolved history to offer guidance for this concern."
+                      />
+                    )}
+                    {suggestion.data.generated &&
+                      suggestion.data.suggested_action && (
+                        <div className="rounded-xl border border-brand-100 bg-brand-50 p-4">
+                          <Badge tone="green">
+                            AI suggestion · Review before use
+                          </Badge>
+                          <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-slate-600">
+                            {suggestion.data.suggested_action}
+                          </p>
+                        </div>
+                      )}
+                    {suggestion.data.retrieved_cases?.map((item, index) => (
+                      <article
+                        key={`${item.complaint_id}-${index}`}
+                        className="rounded-lg border border-slate-200 p-4"
+                      >
+                        <div className="flex flex-wrap justify-between gap-2 text-xs text-slate-500">
+                          <span>Past complaint #{item.complaint_id}</span>
+                          <Badge>
+                            {Math.round(item.similarity * 100)}% similar
+                          </Badge>
+                        </div>
+                        <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-slate-600">
+                          {item.resolution_text}
+                        </p>
+                      </article>
+                    ))}
+                  </>
+                )}
+              </div>
+            </Card>
+          )}
+          {canFeedback && (
+            <Card>
+              <div className="panel-heading">
+                <div>
+                  <h2>How did we do?</h2>
+                  <p>Your feedback helps improve future resolutions.</p>
+                </div>
+                <Icon name="users" size={19} className="text-brand-500" />
+              </div>
+              <form className="space-y-5 p-6" onSubmit={sendFeedback}>
+                <fieldset>
+                  <legend className="text-sm font-medium text-slate-700">
+                    Rate your resolution
+                  </legend>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {[1, 2, 3, 4, 5].map((value) => (
+                      <label
+                        key={value}
+                        className={`flex min-h-11 min-w-12 cursor-pointer items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm ${Number(rating) === value ? "border-brand-500 bg-brand-50 text-brand-700" : "border-slate-200 text-slate-500"}`}
+                      >
+                        <input
+                          type="radio"
+                          name="rating"
+                          value={value}
+                          checked={Number(rating) === value}
+                          onChange={(event) => setRating(event.target.value)}
+                          disabled={busy}
+                          aria-label={`${value} out of 5`}
+                        />
+                        {value}
+                      </label>
+                    ))}
+                  </div>
+                  <p className="mt-2 text-xs text-slate-500">
+                    1 = not resolved · 5 = fully satisfied
+                  </p>
+                </fieldset>
+                {Number(rating) > 0 && Number(rating) <= 2 && (
+                  <Alert>
+                    A rating of 1 or 2 will reopen this complaint for another
+                    review.
+                  </Alert>
+                )}
+                <Field
+                  label="Anything else to share? (optional)"
+                  htmlFor="feedback"
+                >
+                  <textarea
+                    id="feedback"
+                    className="input"
+                    maxLength={2000}
+                    rows={3}
+                    placeholder="Tell us what went well or what needs more attention…"
+                    value={comment}
+                    onChange={(event) => setComment(event.target.value)}
+                    disabled={busy}
+                  />
+                </Field>
+                <Button type="submit" loading={busy}>
+                  Submit feedback
+                </Button>
+              </form>
+            </Card>
+          )}
+        </div>
+        <aside className="space-y-6">
+          <Card>
+            <div className="panel-heading">
+              <h2>At a glance</h2>
+              <Icon name="grid" size={17} className="text-slate-400" />
+            </div>
+            <dl className="space-y-5 p-6">
+              {[
+                ["Category", complaint.category || "Awaiting classification"],
+                [
+                  "Priority",
+                  <PriorityBadge
+                    key="priority"
+                    score={complaint.priority_score}
+                  />,
+                ],
+                ["Department", departmentName],
+                [
+                  "Assigned to",
+                  complaint.assigned_to === user?.id
+                    ? "You"
+                    : complaint.assigned_to
+                      ? `Staff #${complaint.assigned_to}`
+                      : "Not assigned",
+                ],
+                ["Escalation level", complaint.escalation_level],
+                [
+                  "SLA deadline",
+                  complaint.sla_deadline
+                    ? formatDate(complaint.sla_deadline, { time: true })
+                    : "Not set",
+                ],
+                [
+                  "Sentiment",
+                  complaint.sentiment_label?.toLowerCase() || "Not analyzed",
+                ],
+              ].map(([label, value]) => (
+                <div
+                  key={label}
+                  className="flex items-start justify-between gap-5 text-xs"
+                >
+                  <dt className="shrink-0 text-slate-500">{label}</dt>
+                  <dd className="text-right font-medium text-slate-700">
+                    {value}
+                  </dd>
                 </div>
               ))}
-            {!complaint.priority_breakdown?.components?.length && (
-              <p className="text-sm text-slate-500">Priority explanation is not available yet.</p>
+            </dl>
+            {isOverdue(complaint) && (
+              <div className="px-6 pb-6">
+                <Alert variant="error">
+                  This open concern is past its SLA deadline.
+                </Alert>
+              </div>
             )}
+          </Card>
+          <Card className="p-6">
+            <details>
+              <summary className="cursor-pointer text-sm font-semibold text-slate-700">
+                Understand the priority
+              </summary>
+              <p className="mt-3 text-xs leading-6 text-slate-500">
+                The latest available scoring breakdown is shown below. An
+                administrator can adjust the current score separately.
+              </p>
+              <div className="mt-5 space-y-4">
+                {complaint.priority_breakdown?.components?.length ? (
+                  [...complaint.priority_breakdown.components]
+                    .sort((a, b) => b.contribution - a.contribution)
+                    .map((item) => (
+                      <div key={item.name}>
+                        <div className="flex items-center justify-between gap-3 text-xs">
+                          <span className="capitalize text-slate-600">
+                            {item.name.replaceAll("_", " ")}
+                          </span>
+                          <span className="font-medium text-slate-700">
+                            {Number(item.contribution).toFixed(2)} pts
+                          </span>
+                        </div>
+                        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-100">
+                          <div
+                            className="h-full rounded-full bg-brand-400"
+                            style={{
+                              width: `${Math.max(0, Math.min(100, item.contribution))}%`,
+                            }}
+                          />
+                        </div>
+                        <p className="mt-1.5 text-[10px] text-slate-500">
+                          Value {item.raw_value} · Weight{" "}
+                          {Math.round(item.weight * 100)}%
+                        </p>
+                      </div>
+                    ))
+                ) : (
+                  <p className="text-xs text-slate-500">
+                    A priority explanation isn’t available yet.
+                  </p>
+                )}
+              </div>
+            </details>
+          </Card>
+          {role === "admin" && (
+            <Card className="p-6">
+              <Icon name="shield" size={20} className="text-brand-500" />
+              <h2 className="mt-3 text-sm font-semibold text-slate-700">
+                Administrative controls
+              </h2>
+              <p className="mt-2 text-xs leading-6 text-slate-500">
+                Adjust the department or priority when this concern needs a
+                different approach.
+              </p>
+              {departments.error && (
+                <div className="my-3">
+                  <Alert variant="error">
+                    {departments.error}{" "}
+                    <button className="underline" onClick={departments.refresh}>
+                      Retry departments
+                    </button>
+                  </Alert>
+                </div>
+              )}
+              <Button
+                variant="secondary"
+                className="mt-4"
+                onClick={openOverride}
+              >
+                Edit department & priority
+              </Button>
+            </Card>
+          )}
+        </aside>
+      </div>
+      <Modal
+        open={Boolean(pendingStatus)}
+        onClose={() => setPendingStatus(null)}
+        busy={busy}
+        title={
+          pendingStatus === "resolved"
+            ? "Mark this complaint resolved?"
+            : "Reject this complaint?"
+        }
+        description={
+          pendingStatus === "resolved"
+            ? "Confirm that the concern has been addressed. The owner can then share feedback."
+            : "Rejection closes this complaint. It cannot be moved to another status from this workspace."
+        }
+        footer={
+          <>
+            <Button
+              variant="secondary"
+              disabled={busy}
+              onClick={() => setPendingStatus(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant={pendingStatus === "rejected" ? "danger" : "primary"}
+              loading={busy}
+              onClick={() => changeStatus(pendingStatus)}
+            >
+              {pendingStatus === "resolved"
+                ? "Confirm resolution"
+                : "Confirm rejection"}
+            </Button>
+          </>
+        }
+      >
+        <p className="text-sm font-medium text-slate-700">
+          #{complaint.id} · {complaint.title}
+        </p>
+        {pendingStatus === "resolved" && resolution.trim() && (
+          <p className="mt-3 whitespace-pre-wrap text-xs leading-6 text-slate-500">
+            {resolution}
+          </p>
+        )}
+        {actionError && (
+          <div className="mt-4">
+            <Alert variant="error">{actionError}</Alert>
           </div>
         )}
-      </div>
-
-      {/*
-        Staff/admin action panel. The backend is the real authority here
-        (require_role("staff","admin") on the PATCH endpoint) — this check
-        just avoids showing controls to someone who'd get a 403 anyway.
-      */}
-      {canUpdateStatus && (
-        <div className="bg-white rounded-lg shadow p-6">
-          <h2 className="text-sm font-semibold text-slate-800 mb-1">
-            Update Status
-          </h2>
-          <p className="text-xs text-slate-500 mb-4">
-            Current status: <span className="font-medium capitalize">{complaint.status.replace("_", " ")}</span>
-          </p>
-
-          {VALID_TRANSITIONS[complaint.status]?.includes("resolved") && (
-            <label className="block mb-4">
-              <span className="block text-xs font-medium text-slate-700 mb-1">
-                Resolution note (optional)
-              </span>
-              <textarea
-                aria-label="Resolution note"
-                maxLength={5000}
-                value={resolutionText}
-                onChange={(event) => setResolutionText(event.target.value)}
-                rows={3}
-                placeholder="Describe the action taken to resolve this complaint..."
-                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-              />
-            </label>
-          )}
-
-          {(VALID_TRANSITIONS[complaint.status] || []).length === 0 ? (
-            <p className="text-sm text-slate-500">
-              This complaint is in a final state — no further transitions are allowed.
-            </p>
-          ) : (
-            <div className="flex flex-wrap gap-2">
-              {VALID_TRANSITIONS[complaint.status].map((nextStatus) => (
-                <button
-                  type="button"
-                  key={nextStatus}
-                  onClick={() => handleStatusUpdate(nextStatus)}
-                  disabled={updatingStatus !== null}
-                  className="rounded-md bg-slate-800 text-white text-sm font-medium px-4 py-2 hover:bg-slate-700 disabled:opacity-60 disabled:cursor-not-allowed"
-                >
-                  {updatingStatus === nextStatus
-                    ? "Updating..."
-                    : STATUS_ACTION_LABELS[nextStatus] || nextStatus}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {canUpdateStatus && (
-            <div className="bg-violet-50 border border-violet-100 rounded-lg p-6">
-              <h2 className="text-sm font-semibold text-violet-900">Suggested Resolution</h2>
-              <p className="mt-1 text-xs text-violet-800/80">
-                Advisory guidance based on similar resolved complaints. Review before acting.
-              </p>
-              {suggestionLoading && <p className="mt-4 text-sm text-slate-500">Loading suggestions...</p>}
-              {suggestionError && <p className="mt-4 text-sm text-red-600">{suggestionError}</p>}
-              {!suggestionLoading && !suggestionError && suggestion?.retrieved_cases?.length === 0 && (
-                <p className="mt-4 text-sm text-slate-600">Not enough resolved history yet.</p>
-              )}
-              {!suggestionLoading && !suggestionError && suggestion?.retrieved_cases?.length > 0 && (
-                <div className="mt-4 space-y-3">
-                  {suggestion.generated && suggestion.suggested_action && (
-                    <div className="rounded-md border border-violet-200 bg-white p-3">
-                      <p className="text-xs font-semibold uppercase tracking-wide text-violet-700">
-                        AI-generated, advisory only
-                      </p>
-                      <p className="mt-1 text-sm text-slate-700 whitespace-pre-wrap">
-                        {suggestion.suggested_action}
-                      </p>
-                    </div>
-                  )}
-                  {suggestion.retrieved_cases.map((item) => (
-                    <div key={`${item.complaint_id}-${item.similarity}`} className="rounded-md bg-white p-3">
-                      <div className="flex justify-between gap-3 text-xs text-slate-500">
-                        <span>Past complaint #{item.complaint_id}</span>
-                        <span>Similarity {(item.similarity * 100).toFixed(0)}%</span>
-                      </div>
-                      <p className="mt-1 text-sm text-slate-700">{item.resolution_text}</p>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {updateSuccess && (
-            <p className="mt-3 text-sm text-green-700 bg-green-50 border border-green-200 rounded-md px-3 py-2">
-              {updateSuccess}
-            </p>
-          )}
-          {updateError && (
-            <p className="mt-3 text-sm text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2" role="alert">
-              {updateError}
-            </p>
-          )}
-        </div>
-      )}
-
-      {/*
-        Admin-only manual override of AI-derived department/priority.
-        Backend enforces require_role("admin") on PATCH /complaints/{id}/override —
-        this check just avoids showing controls to someone who'd get a 403.
-      */}
-      {isAdmin && (
-        <div className="bg-amber-50 border border-amber-200 rounded-lg p-6">
-          <h2 className="text-sm font-semibold text-amber-900 mb-1">
-            Admin Override
-          </h2>
-          <p className="text-xs text-amber-800/80 mb-4">
-            Manually correct the AI-derived department or priority score. Overridden
-            values are labeled above and will no longer be treated as AI-generated.
-          </p>
-
-          <form onSubmit={handleOverrideFormSubmit} className="space-y-3">
-            <div>
-              <label className="block text-xs font-medium text-amber-900 mb-1">
-                Department
-              </label>
-              <select
-                value={overrideDepartmentId}
-                onChange={(e) => setOverrideDepartmentId(e.target.value)}
-                className="w-full max-w-xs rounded-md border border-amber-300 px-3 py-2 text-sm bg-white"
+      </Modal>
+      <Modal
+        open={overrideOpen}
+        onClose={() => setOverrideOpen(false)}
+        busy={busy}
+        title={review ? "Review your changes" : "Edit department & priority"}
+        description="These changes replace the current values for this complaint."
+        footer={
+          review ? (
+            <>
+              <Button
+                variant="secondary"
+                disabled={busy}
+                onClick={() => setReview(null)}
               >
-                <option value="">Unassigned</option>
-                {departments.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.name}
+                Back
+              </Button>
+              <Button loading={busy} onClick={confirmOverride}>
+                Confirm changes
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button
+                variant="secondary"
+                onClick={() => setOverrideOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" form="override-form">
+                Review changes
+              </Button>
+            </>
+          )
+        }
+      >
+        {review ? (
+          <ul className="space-y-3 text-sm text-slate-600">
+            {review.summary.map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+        ) : (
+          <form
+            id="override-form"
+            onSubmit={reviewOverride}
+            className="space-y-5"
+          >
+            <Field label="Department" htmlFor="override-department">
+              <select
+                id="override-department"
+                className="input"
+                value={override.department}
+                onChange={(event) =>
+                  setOverride((current) => ({
+                    ...current,
+                    department: event.target.value,
+                  }))
+                }
+                disabled={departments.loading || Boolean(departments.error)}
+              >
+                <option value="" disabled={complaint.department_id != null}>
+                  Not assigned
+                </option>
+                {complaint.department_id != null &&
+                  !departments.data?.some(
+                    (item) => item.id === complaint.department_id,
+                  ) && (
+                    <option value={complaint.department_id}>
+                      {departmentName}
+                    </option>
+                  )}
+                {departments.data?.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name}
                   </option>
                 ))}
               </select>
-            </div>
-
-            <div>
-              <label className="block text-xs font-medium text-amber-900 mb-1">
-                Priority Score (0.00 – 100.00)
-              </label>
-              <input
-                type="number"
-                step="0.01"
-                min="0"
-                max="100"
-                value={overridePriorityScore}
-                onChange={(e) => setOverridePriorityScore(e.target.value)}
-                className="w-32 rounded-md border border-amber-300 px-3 py-2 text-sm bg-white"
-              />
-            </div>
-
-            {overrideError && (
-              <p className="text-sm text-red-600" role="alert">
-                {overrideError}
-              </p>
-            )}
-            {overrideSuccess && (
-              <p className="text-sm text-green-700 bg-green-50 border border-green-200 rounded-md px-3 py-2">
-                {overrideSuccess}
-              </p>
-            )}
-
-            <button
-              type="submit"
-              className="rounded-md bg-amber-700 text-white text-sm font-medium px-4 py-2 hover:bg-amber-800"
+            </Field>
+            <Field
+              label="Priority score"
+              htmlFor="override-priority"
+              hint="A score from 0 to 100. Higher scores indicate greater urgency."
             >
-              Review Override
-            </button>
+              <input
+                id="override-priority"
+                type="number"
+                className="input"
+                min={0}
+                max={100}
+                step="0.01"
+                value={override.priority}
+                onChange={(event) =>
+                  setOverride((current) => ({
+                    ...current,
+                    priority: event.target.value,
+                  }))
+                }
+              />
+            </Field>
           </form>
-        </div>
-      )}
-
-      {/* Confirmation before saving an important change, per requirement */}
-      {pendingOverride && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-lg shadow-lg p-6 max-w-sm w-full">
-            <h3 className="text-sm font-semibold text-slate-800">Confirm override</h3>
-            <ul className="mt-3 text-sm text-slate-600 list-disc list-inside space-y-1">
-              {pendingOverride.summary.map((line) => (
-                <li key={line}>{line}</li>
-              ))}
-            </ul>
-            <p className="mt-3 text-xs text-slate-500">
-              This will replace the AI-generated value and be recorded as an admin override.
-            </p>
-
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                onClick={() => setPendingOverride(null)}
-                disabled={isOverriding}
-                className="rounded-md border border-slate-300 text-slate-700 text-sm font-medium px-4 py-2 hover:bg-slate-50 disabled:opacity-60"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={confirmOverride}
-                disabled={isOverriding}
-                className="rounded-md bg-amber-700 text-white text-sm font-medium px-4 py-2 hover:bg-amber-800 disabled:opacity-60"
-              >
-                {isOverriding ? "Saving..." : "Confirm Override"}
-              </button>
-            </div>
+        )}
+        {overrideError && (
+          <div className="mt-4">
+            <Alert variant="error">{overrideError}</Alert>
           </div>
-        </div>
-      )}
+        )}
+      </Modal>
     </div>
   );
 }
 
-export default ComplaintDetail;
+export default function ComplaintDetail() {
+  const { id } = useParams();
+  const { role } = useAuth();
+  if (!/^[1-9]\d*$/.test(id) || !Number.isSafeInteger(Number(id)))
+    return (
+      <Card>
+        <EmptyState
+          icon="search"
+          title="That complaint ID isn’t valid"
+          description="Open a complaint from your workspace to see its details."
+          action={
+            <Link to={getHomeRouteForRole(role)} className="btn btn-primary">
+              Back to workspace
+            </Link>
+          }
+        />
+      </Card>
+    );
+  return <Detail key={id} id={id} />;
+}
