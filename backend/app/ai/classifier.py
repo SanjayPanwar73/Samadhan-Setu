@@ -5,7 +5,7 @@ Uses facebook/bart-large-mnli to classify complaint text into one of the
 department categories, without needing to train a model ourselves.
 """
 
-from functools import lru_cache
+from app.ai.runtime import load_model, shared_model
 
 CANDIDATE_LABELS = [
     "electricity",
@@ -19,13 +19,14 @@ CANDIDATE_LABELS = [
 ]
 
 
-@lru_cache(maxsize=1)
+@shared_model
 def _get_classifier():
     # Imported lazily so the rest of the app can run/test without torch
     # installed until this function is actually called.
     from transformers import pipeline
 
-    return pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
+    return load_model("facebook/bart-large-mnli",
+                      lambda path: pipeline("zero-shot-classification", model=path))
 
 
 def classify_complaint(text: str) -> str:

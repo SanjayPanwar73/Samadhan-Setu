@@ -14,6 +14,7 @@ export default function Register() {
   const [form, setForm] = useState({
     name: "",
     email: "",
+    enrollment_no: "",
     password: "",
     confirm: "",
   });
@@ -33,6 +34,8 @@ export default function Register() {
     if (loading) return;
     const invalid = {};
     if (!form.name.trim()) invalid.name = "Enter your full name.";
+    if (form.enrollment_no.trim().length < 3)
+      invalid.enrollment_no = "Enter your enrollment number.";
     if (form.password.length < 8)
       invalid.password = "Use at least 8 characters.";
     if (new TextEncoder().encode(form.password).length > 72)
@@ -50,6 +53,7 @@ export default function Register() {
       await api.post("/auth/register", {
         name: form.name.trim(),
         email: form.email.trim(),
+        enrollment_no: form.enrollment_no.trim(),
         password: form.password,
       });
       navigate("/login", {
@@ -106,6 +110,23 @@ export default function Register() {
             required
             value={form.email}
             onChange={(event) => update("email", event.target.value)}
+            disabled={loading}
+          />
+        </Field>
+        <Field label="Enrollment number" htmlFor="enrollment_no" error={errors.enrollment_no}>
+          <input
+            id="enrollment_no"
+            name="enrollment_no"
+            autoComplete="off"
+            className="input"
+            placeholder="Your college enrollment number"
+            required
+            minLength={3}
+            maxLength={32}
+            value={form.enrollment_no}
+            onChange={(event) => update("enrollment_no", event.target.value)}
+            aria-invalid={Boolean(errors.enrollment_no)}
+            aria-describedby={errors.enrollment_no ? "enrollment_no-error" : undefined}
             disabled={loading}
           />
         </Field>

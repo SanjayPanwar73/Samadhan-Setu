@@ -130,13 +130,19 @@ export default function Login() {
               Requires the backend demo seed. Password: password123.
             </p>
             <div className="mt-3 flex flex-wrap gap-2">
-              {["user", "staff", "admin", "management"].map((value) => (
+              {[
+                ["Student", "student@example.com"],
+                ["Staff", "water.staff@example.com"],
+                ["Dept admin", "water.admin@example.com"],
+                ["HOD", "hod@example.com"],
+                ["Super admin", "super@example.com"],
+              ].map(([value, demoEmail]) => (
                 <Button
                   key={value}
                   variant="secondary"
                   className="!min-h-8 !px-2 !py-1 !text-xs capitalize"
                   onClick={() => {
-                    setEmail(`${value}@example.com`);
+                    setEmail(demoEmail);
                     setPassword("password123");
                     setError("");
                   }}

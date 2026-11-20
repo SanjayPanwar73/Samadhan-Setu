@@ -3,7 +3,8 @@ import { useAuth } from "../contexts/AuthContext";
 import {
   getDisplayName,
   getHomeRouteForRole,
-  ROLE_LABELS,
+  canonicalRole,
+  roleLabel,
 } from "../utils/auth";
 import {
   Badge,
@@ -59,13 +60,13 @@ export default function Profile() {
               </h2>
               <p className="mt-1 text-sm text-slate-500">{user?.email}</p>
             </div>
-            <Badge tone="green">{ROLE_LABELS[role] || role}</Badge>
+            <Badge tone="green">{roleLabel(role)}</Badge>
           </div>
           <dl className="mt-7 grid gap-6 border-t border-slate-100 pt-6 sm:grid-cols-2">
             {[
               ["Full name", user?.name],
               ["Email address", user?.email],
-              ["Workspace role", ROLE_LABELS[role] || role],
+              ["Workspace role", roleLabel(role)],
               ["Account ID", user?.id ? `#${user.id}` : null],
             ].map(([label, value]) => (
               <div key={label}>
@@ -87,13 +88,13 @@ export default function Profile() {
             Your workspace access
           </h2>
           <p className="mt-2 text-xs leading-6 text-slate-500">
-            {role === "user"
-              ? "Submit concerns, follow your complaints, and share feedback on completed resolutions."
-              : role === "staff"
-                ? "Review complaints and take action on those assigned to you."
-                : role === "admin"
-                  ? "Manage departments and team accounts, assign concerns, and oversee resolutions."
-                  : "Review complaint trends, SLA performance, and the priority queue."}
+            {{
+              student: "Submit complaints, follow their progress, and share feedback on completed fixes.",
+              staff: "Open the tasks assigned to you, post updates, and submit resolutions.",
+              dept_admin: "Review your department's issues, assign staff, and verify resolutions.",
+              hod: "Follow your department's workload, delays, escalations and satisfaction.",
+              super_admin: "Manage departments, users, locations, assets, priority rules and the audit trail.",
+            }[canonicalRole(role)] || "Open your workspace."}
           </p>
           <Link
             to={getHomeRouteForRole(role)}

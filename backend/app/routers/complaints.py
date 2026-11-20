@@ -1,235 +1,140 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+"""Complaints: student submission, own views, feedback, and department-admin relinking."""
+
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.deps import get_current_user, require_role
+from app.core.errors import DomainError
+from app.core.roles import has_role
+from app.deps import Scope, get_current_user, get_scope, require_role
+from app.models.audit_event import AuditEvent
 from app.models.complaint import Complaint
-from app.models.feedback import Feedback
-from app.models.department import Department
+from app.models.issue import Issue
 from app.models.user import User
-from app.schemas.complaint import (
-    ComplaintCreate,
-    ComplaintOut,
-    ComplaintStatusUpdate,
-    FeedbackCreate,
-    ComplaintOverride,
+from app.models.work import Assignment
+from app.routers._common import commit_and_dispatch
+from app.schemas.v2 import (
+    ComplaintAdminView, ComplaintCreate, ComplaintOwnerView, ComplaintStaffView, FeedbackIn, RelinkIn,
 )
-from app.services.complaint_service import create_complaint, update_status
-from app.ai.rag import generate_suggestion, retrieve_similar_resolutions
+from app.services import (
+    attachment_service, feedback_service, intake_service, issue_service, notification_service, views,
+)
+from app.services.privacy import STUDENT_STATUS_LABEL, shared_issue_message
 
 router = APIRouter(prefix="/complaints", tags=["complaints"])
 
-VALID_TRANSITIONS = {
-    "pending": {"in_progress", "rejected"},
-    "in_progress": {"resolved", "rejected"},
-    "resolved": set(),
-    "reopened": {"in_progress"},
-    "rejected": set(),
-}
+
+def _load(db: Session, complaint_id: int) -> Complaint:
+    c = db.query(Complaint).filter(Complaint.id == complaint_id).first()
+    if c is None:
+        raise HTTPException(404, "Complaint not found")
+    return c
 
 
-def _ensure_staff_scope(complaint: Complaint, current_user: User) -> None:
-    """Staff may act only on complaints assigned to them; admins are global."""
-    role = current_user.role.value if hasattr(current_user.role, "value") else current_user.role
-    if role == "staff" and complaint.assigned_to != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Staff may only act on complaints assigned to them",
-        )
-
-
-@router.post("", response_model=ComplaintOut, status_code=status.HTTP_201_CREATED)
-def submit_complaint(
-    payload: ComplaintCreate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    return create_complaint(db, payload, current_user.id)
-
-
-@router.get("/me", response_model=list[ComplaintOut])
-def my_complaints(
-    offset: int = Query(default=0, ge=0, le=100_000),
-    limit: int = Query(default=20, ge=1, le=100),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    return (
-        db.query(Complaint)
-        .filter(Complaint.created_by == current_user.id)
-        .order_by(Complaint.created_at.desc())
-        .offset(offset)
-        .limit(limit)
-        .all()
-    )
-
-
-@router.get("/assigned", response_model=list[ComplaintOut])
-def assigned_complaints(
-    offset: int = Query(default=0, ge=0, le=100_000),
-    limit: int = Query(default=20, ge=1, le=100),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_role("staff", "admin")),
-):
-    return (
-        db.query(Complaint)
-        .filter(Complaint.assigned_to == current_user.id)
-        .order_by(Complaint.priority_score.desc(), Complaint.created_at.desc())
-        .offset(offset)
-        .limit(limit)
-        .all()
-    )
-
-
-@router.get("/{complaint_id}", response_model=ComplaintOut)
-def get_complaint(
-    complaint_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    complaint = db.query(Complaint).filter(Complaint.id == complaint_id).first()
-    if not complaint:
-        raise HTTPException(status_code=404, detail="Complaint not found")
-
-    is_owner = complaint.created_by == current_user.id
-    is_staff_or_above = current_user.role.value in ("staff", "admin", "management")
-    if not (is_owner or is_staff_or_above):
-        raise HTTPException(status_code=403, detail="Not authorized to view this complaint")
-
-    return complaint
-
-
-@router.patch("/{complaint_id}/status", response_model=ComplaintOut)
-def patch_status(
-    complaint_id: int,
-    payload: ComplaintStatusUpdate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_role("staff", "admin")),
-):
-    complaint = db.query(Complaint).filter(Complaint.id == complaint_id).first()
-    if not complaint:
-        raise HTTPException(status_code=404, detail="Complaint not found")
-    _ensure_staff_scope(complaint, current_user)
-
-    current = complaint.status.value if hasattr(complaint.status, "value") else complaint.status
-    new_status = payload.status.value if hasattr(payload.status, "value") else payload.status
-
-    if new_status not in VALID_TRANSITIONS.get(current, set()):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid status transition: {current} -> {new_status}",
-        )
-
-    resolution_text = payload.resolution_text or payload.remarks
-    return update_status(db, complaint, payload.status, current_user.id, resolution_text)
-
-
-@router.get("/{complaint_id}/suggested-resolution")
-def suggested_resolution(
-    complaint_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_role("staff", "admin")),
-):
-    complaint = db.query(Complaint).filter(Complaint.id == complaint_id).first()
-    if not complaint:
-        raise HTTPException(status_code=404, detail="Complaint not found")
-    _ensure_staff_scope(complaint, current_user)
-
-    retrieved = retrieve_similar_resolutions(
-        f"{complaint.title}. {complaint.description}"
-    )
-    retrieved = [
-        result for result in retrieved if result["complaint_id"] != complaint.id
-    ]
-    suggested_action = generate_suggestion(
-        f"{complaint.title}. {complaint.description}", retrieved
-    ) if retrieved else None
+@router.post("", status_code=201)
+def create_complaint(payload: ComplaintCreate, background: BackgroundTasks, db: Session = Depends(get_db),
+                     student: User = Depends(require_role("student"))):
+    result = intake_service.submit_complaint(db, student, intake_service.IntakeInput(**payload.model_dump()))
+    background.add_task(notification_service.dispatch_pending)
+    issue, c = result.issue, result.complaint
     return {
-        "complaint_id": complaint.id,
-        "retrieved_cases": retrieved,
-        "suggested_action": suggested_action,
-        "generated": suggested_action is not None,
+        "complaint_id": c.id, "ticket_no": issue.ticket_no, "outcome": result.outcome,
+        "status": issue.status, "status_label": STUDENT_STATUS_LABEL.get(issue.status, issue.status),
+        "message": shared_issue_message(issue.report_count), "existing": result.existing,
+        "pii_redacted": result.pii_redacted,
+        "warning": "Personal details were removed from your text." if result.pii_redacted else None,
     }
 
 
-@router.patch("/{complaint_id}/override", response_model=ComplaintOut)
-def override_complaint(
-    complaint_id: int,
-    payload: ComplaintOverride,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_role("admin")),
-):
-    complaint = db.query(Complaint).filter(Complaint.id == complaint_id).first()
-    if not complaint:
-        raise HTTPException(status_code=404, detail="Complaint not found")
-    if payload.department_id is None and payload.priority_score is None:
-        raise HTTPException(status_code=400, detail="Provide a department or priority score")
-    if payload.priority_score is not None and not 0 <= payload.priority_score <= 100:
-        raise HTTPException(status_code=400, detail="Priority score must be between 0 and 100")
-    if payload.department_id is not None:
-        department = db.query(Department).filter(Department.id == payload.department_id).first()
-        if not department:
-            raise HTTPException(status_code=404, detail="Department not found")
-        complaint.department_id = department.id
-    if payload.priority_score is not None:
-        complaint.priority_score = payload.priority_score
+@router.get("/me", response_model=list[ComplaintOwnerView])
+def my_complaints(offset: int = Query(0, ge=0, le=100_000), limit: int = Query(20, ge=1, le=100),
+                  db: Session = Depends(get_db), student: User = Depends(require_role("student"))):
+    rows = (views.owner_query(db).filter(Complaint.created_by == student.id)
+            .order_by(Complaint.created_at.desc(), Complaint.id.desc()).offset(offset).limit(limit).all())
+    return [views.owner_view(row) for row in rows]
+
+
+@router.get("/{complaint_id}")
+def get_complaint(complaint_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user),
+                  scope: Scope = Depends(get_scope)):
+    if has_role(user, "student"):
+        row = views.owner_query(db).filter(Complaint.id == complaint_id, Complaint.created_by == user.id).first()
+        if row is None:
+            raise HTTPException(404, "Complaint not found")
+        return views.owner_view(row)
+    c = _load(db, complaint_id)
+    if has_role(user, "staff"):
+        mine = db.query(Assignment.id).filter(Assignment.staff_id == user.id,
+                                              Assignment.issue_id == c.issue_id).first()
+        if not mine:
+            raise HTTPException(404, "Complaint not found")
+        return views.staff_view(c)
+    if has_role(user, "dept_admin", "super_admin") and scope.can_access(c.department_id):
+        return views.admin_view(c)
+    raise HTTPException(404, "Complaint not found")  # HOD sees aggregates only
+
+
+_SAFE_ACTIONS = {"complaint_submitted", "status_changed", "resolution_approved", "complaint_relinked"}
+
+
+@router.get("/{complaint_id}/timeline")
+def timeline(complaint_id: int, db: Session = Depends(get_db),
+             student: User = Depends(require_role("student"))):
+    c = _load(db, complaint_id)
+    if c.created_by != student.id:
+        raise HTTPException(404, "Complaint not found")
+    q = db.query(AuditEvent).filter(AuditEvent.action.in_(_SAFE_ACTIONS))
+    if c.issue_id:
+        q = q.filter((AuditEvent.complaint_id == c.id) | (AuditEvent.issue_id == c.issue_id))
+    else:
+        q = q.filter(AuditEvent.complaint_id == c.id)
+    events = []
+    for e in q.order_by(AuditEvent.id).all():
+        if e.action == "complaint_submitted" and e.complaint_id != c.id:
+            continue  # other students' submissions are never part of my timeline
+        status = (e.after or {}).get("status")
+        label = {"complaint_submitted": "Complaint received", "resolution_approved": "Resolution approved",
+                 "complaint_relinked": "Linked to a shared issue"}.get(e.action) \
+            or STUDENT_STATUS_LABEL.get(status, status or "Updated")
+        events.append({"at": e.created_at, "label": label})
+    return events
+
+
+@router.post("/{complaint_id}/attachments", status_code=201)
+async def upload_attachment(complaint_id: int, file: UploadFile = File(...), kind: str = Form("evidence"),
+                            db: Session = Depends(get_db), student: User = Depends(require_role("student"))):
+    c = _load(db, complaint_id)
+    if c.created_by != student.id:
+        raise HTTPException(404, "Complaint not found")
+    att = await attachment_service.save_upload(db, file, owner_type="complaint", owner_id=c.id, kind=kind,
+                                               user=student, issue_id=c.issue_id)
     db.commit()
-    db.refresh(complaint)
-    return complaint
+    return {"id": att.id, "mime": att.mime, "size_bytes": att.size_bytes}
 
 
-@router.post("/{complaint_id}/feedback", status_code=status.HTTP_201_CREATED)
-def add_feedback(
-    complaint_id: int,
-    payload: FeedbackCreate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    complaint = db.query(Complaint).filter(Complaint.id == complaint_id).first()
-    if not complaint:
-        raise HTTPException(status_code=404, detail="Complaint not found")
-    if complaint.created_by != current_user.id:
-        raise HTTPException(status_code=403, detail="Only the complaint owner can leave feedback")
-    if not (1 <= payload.rating <= 5):
-        raise HTTPException(status_code=400, detail="Rating must be between 1 and 5")
+@router.post("/{complaint_id}/feedback", status_code=201)
+def give_feedback(complaint_id: int, payload: FeedbackIn, background: BackgroundTasks,
+                  db: Session = Depends(get_db), student: User = Depends(require_role("student"))):
+    c = _load(db, complaint_id)
+    if c.created_by != student.id:
+        raise HTTPException(404, "Complaint not found")
+    fb = feedback_service.submit(db, c, student, rating=payload.rating, comment=payload.comment,
+                                 resolved_for_me=payload.resolved_for_me,
+                                 still_unresolved=payload.still_unresolved)
+    commit_and_dispatch(db, background)
+    return {"id": fb.id, "recorded": True, "dissent": bool(fb.still_unresolved)}
 
-    feedback = Feedback(
-        complaint_id=complaint_id,
-        user_id=current_user.id,
-        rating=payload.rating,
-        comment=payload.comment,
-    )
-    db.add(feedback)
-    was_resolved = complaint.status.value == "resolved" if hasattr(complaint.status, "value") else complaint.status == "resolved"
-    if was_resolved and payload.rating <= 2:
-        complaint.status = "reopened"
-        complaint.escalation_level = (complaint.escalation_level or 0) + 1
-        complaint.repeat_count = (complaint.repeat_count or 1) + 1
-        from app.ai.priority import compute_priority
-        from app.models.complaint_history import ComplaintHistory
-        from datetime import datetime, timezone
 
-        age_days = max(
-            0.0,
-            (datetime.now(timezone.utc) - complaint.created_at.replace(tzinfo=timezone.utc)).total_seconds()
-            / 86400,
-        )
-        priority = compute_priority(
-            severity=complaint.sentiment_score or 0.0,
-            people_affected=complaint.people_affected or 1,
-            age_days=age_days,
-            repeat_count=complaint.repeat_count,
-        )
-        complaint.priority_score = priority["final_score"]
-        complaint.priority_breakdown = priority
-        db.add(
-            ComplaintHistory(
-                complaint_id=complaint.id,
-                action="auto_reopened",
-                detail=f"Reopened due to low feedback rating: {payload.rating}/5",
-                actor_id=current_user.id,
-            )
-        )
-    db.commit()
-    db.refresh(feedback)
-    return {"id": feedback.id, "message": "Feedback recorded"}
+@router.post("/{complaint_id}/relink")
+def relink_complaint(complaint_id: int, payload: RelinkIn, background: BackgroundTasks,
+                     db: Session = Depends(get_db), actor: User = Depends(require_role("dept_admin", "super_admin")),
+                     scope: Scope = Depends(get_scope)):
+    c = _load(db, complaint_id)
+    if not scope.can_access(c.department_id):
+        raise HTTPException(404, "Complaint not found")
+    target = db.query(Issue).filter(Issue.id == payload.issue_id).first()
+    if target is None or not scope.can_access(target.department_id):
+        raise HTTPException(404, "Issue not found")
+    issue_service.relink(db, c, target, actor, payload.reason)
+    commit_and_dispatch(db, background)
+    return {"complaint_id": c.id, "issue_id": target.id, "ticket_no": target.ticket_no}

@@ -12,7 +12,8 @@ from app.core.database import Base
 import app.models  # noqa: F401  ensures all models are registered on Base.metadata
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+# ConfigParser interprets percent signs in URL-encoded credentials.
+config.set_main_option("sqlalchemy.url", settings.DATABASE_URL.replace("%", "%%"))
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

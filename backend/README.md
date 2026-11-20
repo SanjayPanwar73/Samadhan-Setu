@@ -18,9 +18,11 @@ pip install -r requirements.txt
 cp .env.example .env            # edit if needed (defaults work out of the box)
 ```
 
-> The first run of the AI modules (classifier, similarity, sentiment) will
-> download models from Hugging Face (~1.5GB total). This needs internet
-> access once; models are cached locally after that.
+> The API preloads the intake models in the background at startup. The first
+> download needs internet access and about 2 GB of disk space. Later starts
+> use the local snapshots. A submission during warm-up can still wait for the
+> models. Set `AI_PRELOAD_MODELS=false` to load them on demand, or adjust
+> `AI_CPU_THREADS` (default 2) for the machine running the API.
 
 ## Run the API
 

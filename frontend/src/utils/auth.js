@@ -1,12 +1,36 @@
-﻿import { jwtDecode } from "jwt-decode";
+import { jwtDecode } from "jwt-decode";
 
 export const AUTH_CHANGE_EVENT = "samadhan:session-change";
-export const ROLE_HOME_ROUTES = {
-  user: "/complaints",
-  staff: "/staff",
-  admin: "/admin",
-  management: "/management",
+
+// V2 roles. The V1 names stay valid until the data backfill has renamed every account.
+export const V1_TO_V2_ROLE = {
+  user: "student",
+  admin: "super_admin",
+  management: "hod",
 };
+export const ROLE_HOME_ROUTES = {
+  student: "/complaints",
+  staff: "/tasks",
+  dept_admin: "/department",
+  hod: "/hod",
+  super_admin: "/super/users",
+  ...Object.fromEntries(
+    Object.entries(V1_TO_V2_ROLE).map(([v1, v2]) => [
+      v1,
+      v2 === "student" ? "/complaints" : v2 === "hod" ? "/hod" : "/super/users",
+    ]),
+  ),
+};
+
+export function canonicalRole(role) {
+  return V1_TO_V2_ROLE[role] || role || null;
+}
+
+/** True when `role` (V1 or V2 name) is one of `allowed` (V1 or V2 names). */
+export function hasRole(role, ...allowed) {
+  const current = canonicalRole(role);
+  return Boolean(current) && allowed.some((r) => canonicalRole(r) === current);
+}
 
 export function getToken() {
   try {
@@ -76,14 +100,37 @@ export function getDisplayName(user) {
 }
 
 export const ROLE_LABELS = {
-  user: "Community member",
+  student: "Student",
   staff: "Resolution staff",
-  admin: "Administrator",
-  management: "Management",
+  dept_admin: "Department admin",
+  hod: "Head of department",
+  super_admin: "Super admin",
 };
 
-// Only known, locally hosted routes are eligible after sign-in. Never accept
-// an external URL or send someone back to a page their role cannot access.
+export function roleLabel(role) {
+  return ROLE_LABELS[canonicalRole(role)] || "Account";
+}
+
+// Paths a signed-in role may be sent back to after login. Never accept an
+// external URL or a page the role cannot open.
+const ROLE_PATHS = {
+  student: [/^\/complaints$/, /^\/complaints\/new$/, /^\/complaints\/[1-9]\d*$/],
+  staff: [/^\/tasks$/, /^\/tasks\/[1-9]\d*$/],
+  dept_admin: [
+    /^\/department$/,
+    /^\/department\/staff$/,
+    /^\/department\/issues\/[1-9]\d*$/,
+  ],
+  hod: [/^\/hod$/, /^\/management$/, /^\/department\/staff$/],
+  super_admin: [
+    /^\/management$/,
+    /^\/department$/,
+    /^\/department\/staff$/,
+    /^\/super\/(users|departments|locations-assets|config|audit)$/,
+    /^\/department\/issues\/[1-9]\d*$/,
+  ],
+};
+
 export function getSafeReturnPath(value, role) {
   if (
     typeof value !== "string" ||
@@ -96,15 +143,11 @@ export function getSafeReturnPath(value, role) {
     const url = new URL(value, window.location.origin);
     if (url.origin !== window.location.origin) return null;
     const path = url.pathname;
-    const shared =
-      ["/profile", "/notifications", "/dashboard"].includes(path) ||
-      /^\/complaints\/[1-9]\d*$/.test(path);
-    const personal =
-      path === getHomeRouteForRole(role) ||
-      (role === "user" && path === "/complaints/new") ||
-      (role === "admin" &&
-        ["/admin/departments", "/management"].includes(path));
-    return shared || personal ? `${path}${url.search}${url.hash}` : null;
+    const shared = ["/profile", "/notifications", "/dashboard"].includes(path);
+    const own = (ROLE_PATHS[canonicalRole(role)] || []).some((re) =>
+      re.test(path),
+    );
+    return shared || own ? `${path}${url.search}${url.hash}` : null;
   } catch {
     return null;
   }

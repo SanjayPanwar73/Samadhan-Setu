@@ -6,28 +6,66 @@ import {
   useLocation,
   useNavigate,
 } from "react-router-dom";
-import { getDisplayName, getHomeRouteForRole } from "../utils/auth";
+import { canonicalRole, getDisplayName, getHomeRouteForRole, roleLabel } from "../utils/auth";
+import NotificationBell from "./NotificationBell";
+import EnrollmentPrompt from "./EnrollmentPrompt";
 import { useAuth } from "../contexts/AuthContext";
 import Brand from "./Brand";
 import Icon from "./Icon";
 import { Alert, Button, Modal } from "./ui";
 
 const TITLES = {
-  "/complaints": "Overview",
+  "/complaints": "My complaints",
   "/complaints/new": "New complaint",
-  "/staff": "Assigned to me",
-  "/admin": "Administration",
-  "/admin/departments": "Departments",
-  "/management": "Analytics",
-  "/notifications": "Activity",
+  "/tasks": "My tasks",
+  "/department": "Issue queue",
+  "/department/staff": "Staff workload",
+  "/hod": "Department overview",
+  "/super/users": "Users and roles",
+  "/super/departments": "Departments",
+  "/super/locations-assets": "Locations and assets",
+  "/super/config": "Priority and SLA",
+  "/super/audit": "Audit trail",
+  "/notifications": "Notifications",
   "/profile": "My profile",
 };
-const ROLE_LABELS = {
-  user: "Personal workspace",
+const WORKSPACE_LABELS = {
+  student: "Student workspace",
   staff: "Staff workspace",
-  admin: "Admin workspace",
-  management: "Management workspace",
+  dept_admin: "Department workspace",
+  hod: "Head of department",
+  super_admin: "Admin workspace",
 };
+
+function navigationFor(role) {
+  switch (canonicalRole(role)) {
+    case "student":
+      return [
+        { to: "/complaints", icon: "grid", label: "My complaints", end: true },
+        { to: "/complaints/new", icon: "plus", label: "New complaint" },
+      ];
+    case "staff":
+      return [{ to: "/tasks", icon: "grid", label: "My tasks", end: true }];
+    case "dept_admin":
+      return [
+        { to: "/department", icon: "grid", label: "Issue queue", end: true },
+        { to: "/department/staff", icon: "users", label: "Staff workload" },
+      ];
+    case "hod":
+      return [{ to: "/hod", icon: "chart", label: "Overview", end: true }];
+    case "super_admin":
+      return [
+        { to: "/super/users", icon: "users", label: "Users and roles" },
+        { to: "/super/departments", icon: "building", label: "Departments" },
+        { to: "/super/locations-assets", icon: "grid", label: "Locations and assets" },
+        { to: "/super/config", icon: "sparkles", label: "Priority and SLA" },
+        { to: "/super/audit", icon: "shield", label: "Audit trail" },
+        { to: "/department", icon: "chart", label: "Issue queue" },
+      ];
+    default:
+      return [];
+  }
+}
 
 export default function UserLayout() {
   const { user, role, error, refreshUser, signOut } = useAuth();
@@ -42,7 +80,11 @@ export default function UserLayout() {
     TITLES[location.pathname] ||
     (location.pathname.startsWith("/complaints/")
       ? "Complaint details"
-      : "Workspace");
+      : location.pathname.startsWith("/tasks/")
+        ? "Task details"
+        : location.pathname.startsWith("/department/issues/")
+          ? "Issue details"
+          : "Workspace");
   const name = getDisplayName(user);
   const initials = name
     .split(" ")
@@ -92,25 +134,8 @@ export default function UserLayout() {
     };
   }, [menuOpen]);
 
-  const navigation = [
-    {
-      to: home,
-      icon: "grid",
-      label: role === "staff" ? "Assigned to me" : "Overview",
-      end: true,
-    },
-  ];
-  if (role === "user")
-    navigation.push({
-      to: "/complaints/new",
-      icon: "plus",
-      label: "New complaint",
-    });
-  if (role === "admin")
-    navigation.push(
-      { to: "/admin/departments", icon: "building", label: "Departments" },
-      { to: "/management", icon: "chart", label: "Analytics" },
-    );
+  const navigation = navigationFor(role);
+  const isStudent = canonicalRole(role) === "student";
   return (
     <div className="app-shell">
       <a href="#main-content" className="skip-link">
@@ -155,7 +180,7 @@ export default function UserLayout() {
             <span className="workspace-icon">
               <Icon name="building" size={16} />
             </span>
-            <span>{ROLE_LABELS[role] || "Workspace"}</span>
+            <span>{WORKSPACE_LABELS[canonicalRole(role)] || "Workspace"}</span>
           </div>
           <Icon name="shield" size={14} />
         </div>
@@ -185,7 +210,7 @@ export default function UserLayout() {
             }
           >
             <Icon name="bell" size={18} />
-            Activity
+            Notifications
           </NavLink>
         </nav>
         <p className="nav-section-label mt-8">Account</p>
@@ -209,11 +234,11 @@ export default function UserLayout() {
           <Icon name="sparkles" size={19} className="text-brand-500" />
           <h3>Small steps. Better outcomes.</h3>
           <p>
-            {role === "user"
+            {isStudent
               ? "A clear description helps your concern reach the right team."
               : "Keep your workspace moving. Every resolution makes a difference."}
           </p>
-          {role === "user" && (
+          {isStudent && (
             <Link
               to="/complaints/new"
               onClick={() => setMenuOpen(false)}
@@ -237,7 +262,7 @@ export default function UserLayout() {
               {name}
             </p>
             <p className="mt-1 text-[10px] capitalize text-slate-500">
-              {role} account
+              {roleLabel(role)}
             </p>
           </div>
           <Button
@@ -282,13 +307,7 @@ export default function UserLayout() {
                 day: "numeric",
               })}
             </span>
-            <Link
-              to="/notifications"
-              className="btn btn-ghost icon-button"
-              aria-label="View activity"
-            >
-              <Icon name="bell" size={19} />
-            </Link>
+            <NotificationBell />
             <span className="h-6 w-px bg-slate-200" />
             <Link to="/profile" className="avatar" aria-label="Open profile">
               {initials}
@@ -307,6 +326,9 @@ export default function UserLayout() {
                 Retry profile
               </button>
             </Alert>
+          )}
+          {user?.needs_enrollment_no && (
+            <EnrollmentPrompt onDone={() => refreshUser({ force: true })} />
           )}
           <Outlet />
         </main>

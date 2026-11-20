@@ -1,10 +1,18 @@
-"""Shared sentence-transformer model for the AI modules."""
+"""Shared sentence-transformer model for the AI modules.
 
-from functools import lru_cache
+The model name comes from ``EMBEDDING_MODEL`` (default all-MiniLM-L6-v2). A multilingual
+option such as paraphrase-multilingual-MiniLM-L12-v2 also yields 384 dimensions and
+handles Hindi/Hinglish better. Changing it requires re-embedding existing complaints.
+"""
+
+from app.ai.runtime import load_model, shared_model
+from app.core.config import settings
 
 
-@lru_cache(maxsize=1)
+@shared_model
 def get_embedding_model():
     from sentence_transformers import SentenceTransformer
 
-    return SentenceTransformer("all-MiniLM-L6-v2")
+    name = settings.EMBEDDING_MODEL
+    hub_id = name if "/" in name else f"sentence-transformers/{name}"
+    return load_model(name, SentenceTransformer, hub_id=hub_id)

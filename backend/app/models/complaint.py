@@ -1,6 +1,6 @@
 import enum
 
-from sqlalchemy import Column, Integer, String, Text, Float, Enum, DateTime, ForeignKey, JSON, func
+from sqlalchemy import Boolean, Column, Integer, String, Text, Float, Enum, DateTime, ForeignKey, Index, JSON, UniqueConstraint, false, func
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
@@ -12,6 +12,12 @@ class ComplaintStatus(str, enum.Enum):
     resolved = "resolved"
     rejected = "rejected"
     reopened = "reopened"
+    # V2 issue-driven statuses (synced from the issue)
+    open = "open"
+    assigned = "assigned"
+    awaiting_verification = "awaiting_verification"
+    closed = "closed"
+    merged = "merged"
 
 
 class Complaint(Base):
@@ -21,10 +27,8 @@ class Complaint(Base):
     title = Column(String, nullable=False)
     description = Column(Text, nullable=False)
 
-    # --- Filled in by AI after creation (nullable at insert time) ---
+    # --- Classification and sentiment recorded at intake ---
     category = Column(String, nullable=True)
-    priority_score = Column(Float, nullable=True)
-    priority_breakdown = Column(JSON, nullable=True)
     sentiment_label = Column(String, nullable=True)
     sentiment_score = Column(Float, nullable=True)
 
@@ -32,19 +36,38 @@ class Complaint(Base):
 
     department_id = Column(Integer, ForeignKey("departments.id"), nullable=True)
     created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
-    assigned_to = Column(Integer, ForeignKey("users.id"), nullable=True)
-    issue_root_id = Column(Integer, ForeignKey("complaints.id"), nullable=True, index=True)
 
     people_affected = Column(Integer, default=1)
-    repeat_count = Column(Integer, default=1)
 
-    sla_deadline = Column(DateTime(timezone=True), nullable=True)
-    escalation_level = Column(Integer, default=0, nullable=False)
-    last_escalated_at = Column(DateTime(timezone=True), nullable=True, index=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
+    # --- V2 ---
+    issue_id = Column(Integer, ForeignKey("issues.id"), nullable=True, index=True)  # current link
+    category_id = Column(Integer, ForeignKey("categories.id"), nullable=True)
+    location_id = Column(Integer, ForeignKey("locations.id"), nullable=True)
+    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=True)
+    location_text = Column(String, nullable=True)
+    is_anonymous = Column(Boolean, nullable=False, server_default=false(), default=False)
+    anon_code = Column(String, nullable=True)
+    student_category_id = Column(Integer, ForeignKey("categories.id"), nullable=True)
+    ai_category_id = Column(Integer, ForeignKey("categories.id"), nullable=True)
+    ai_confidence = Column(Float, nullable=True)
+    classification_disagreement = Column(Boolean, nullable=False, server_default=false(), default=False)
+    has_dissent = Column(Boolean, nullable=False, server_default=false(), default=False)
+    client_request_id = Column(String, nullable=True)
+    content_hash = Column(String, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("created_by", "client_request_id", name="uq_complaint_client_request"),
+        Index("ix_complaints_created_by_created_at", "created_by", "created_at"),
+    )
+
     creator = relationship("User", back_populates="complaints_created", foreign_keys=[created_by])
+    location = relationship("Location", viewonly=True)
+    asset = relationship("Asset", viewonly=True)
+    current_link = relationship("IssueLink", uselist=False, viewonly=True,
+                                primaryjoin="and_(Complaint.id == IssueLink.complaint_id, IssueLink.unlinked_at == None)")
     history = relationship("ComplaintHistory", back_populates="complaint")
     feedback = relationship("Feedback", back_populates="complaint")

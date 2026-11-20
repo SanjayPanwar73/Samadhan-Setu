@@ -1,6 +1,6 @@
 ﻿import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
-import { isAuthenticated } from "../utils/auth";
+import { hasRole, isAuthenticated } from "../utils/auth";
 import { Button, ErrorState, PageSkeleton } from "../components/ui";
 
 function ProtectedRoute({ allowedRoles }) {
@@ -28,7 +28,7 @@ function ProtectedRoute({ allowedRoles }) {
       </div>
     );
   }
-  if (allowedRoles && !allowedRoles.includes(role))
+  if (allowedRoles && !hasRole(role, ...allowedRoles))
     return <Navigate to="/unauthorized" replace state={{ from }} />;
   return <Outlet />;
 }

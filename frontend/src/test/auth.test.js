@@ -46,7 +46,8 @@ describe("session and API regressions", () => {
     expect(getSafeReturnPath("/complaints/8?section=priority", "user")).toBe(
       "/complaints/8?section=priority",
     );
-    expect(getSafeReturnPath("/management", "admin")).toBe("/management");
+    expect(getSafeReturnPath("/super/audit", "admin")).toBe("/super/audit");
+    expect(getSafeReturnPath("/super/audit", "student")).toBeNull();
   });
   it("clears a rejected /auth/me session without clearing a newer session", async () => {
     const original = api.defaults.adapter;

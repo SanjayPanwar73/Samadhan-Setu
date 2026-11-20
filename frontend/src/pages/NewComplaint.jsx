@@ -1,67 +1,82 @@
-﻿import { useState } from "react";
+import { useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import api, { getApiError } from "../services/api";
+import useResource from "../hooks/useResource";
 import Icon from "../components/Icon";
-import {
-  Alert,
-  Badge,
-  Button,
-  Card,
-  Field,
-  PageHeader,
-  StatusBadge,
-} from "../components/ui";
+import { AssetPicker, LocationPicker } from "../components/pickers";
+import { Alert, Button, Card, Field, PageHeader } from "../components/ui";
+import { newRequestId } from "../utils/issues";
+
+const EMPTY = {
+  title: "",
+  description: "",
+  departmentId: "",
+  categoryId: "",
+  locationId: null,
+  assetId: null,
+  people: "",
+  anonymous: false,
+};
 
 export default function NewComplaint() {
-  const [form, setForm] = useState({ title: "", description: "", people: "1" });
+  const [form, setForm] = useState(EMPTY);
+  const departments = useResource("/reference/departments");
+  const categories = useResource("/reference/categories");
   const [errors, setErrors] = useState({});
   const [error, setError] = useState("");
+  const [existingId, setExistingId] = useState(null);
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(null);
+  // One id per submission attempt: a retry after a network error cannot create a duplicate.
+  const requestId = useRef(newRequestId());
+
+  const visibleCategories = (categories.data || []).filter(
+    (category) => !form.departmentId || category.department_id === Number(form.departmentId),
+  );
+
   function update(field, value) {
     setForm((current) => ({ ...current, [field]: value }));
     setErrors((current) => ({ ...current, [field]: "" }));
   }
+
   async function submit(event) {
     event.preventDefault();
     if (loading) return;
     const invalid = {};
-    if (form.title.trim().length < 3)
-      invalid.title = "Add a short title with at least 3 characters.";
-    if (form.description.trim().length < 10)
-      invalid.description = "Describe the concern in at least 10 characters.";
-    const people = Number(form.people);
-    if (!Number.isSafeInteger(people) || people < 1 || people > 1000000)
-      invalid.people = "Enter a whole number from 1 to 1,000,000.";
+    if (form.title.trim().length < 3) invalid.title = "Add a short title with at least 3 characters.";
+    if (form.description.trim().length < 10) invalid.description = "Describe the problem in at least 10 characters.";
+    if (!form.locationId) invalid.locationId = "Choose the exact location.";
     setErrors(invalid);
     setError("");
+    setExistingId(null);
     if (Object.keys(invalid).length) {
-      document.getElementById(Object.keys(invalid)[0])?.focus();
+      document.getElementById(Object.keys(invalid)[0] === "locationId" ? "loc-0" : Object.keys(invalid)[0])?.focus();
       return;
     }
     setLoading(true);
     try {
-      const { data } = await api.post(
-        "/complaints",
-        {
-          title: form.title.trim(),
-          description: form.description.trim(),
-          people_affected: people,
-        },
-        { timeout: 120000 },
-      );
+      const body = {
+        title: form.title.trim(),
+        description: form.description.trim(),
+        location_id: form.locationId,
+        is_anonymous: form.anonymous,
+        client_request_id: requestId.current,
+      };
+      if (form.departmentId) body.department_id = Number(form.departmentId);
+      if (form.categoryId) body.category_id = Number(form.categoryId);
+      if (form.assetId) body.asset_id = form.assetId;
+      if (form.people) body.people_affected = Number(form.people);
+      const { data } = await api.post("/complaints", body, { timeout: 120000 });
       setSubmitted(data);
     } catch (requestError) {
-      setError(
-        getApiError(
-          requestError,
-          "We couldn’t submit your complaint. Your details are still here.",
-        ),
-      );
+      const data = requestError.response?.data;
+      if (data?.code === "already_reported") setExistingId(data.complaint_id);
+      setError(getApiError(requestError, "We couldn’t submit your complaint. Your details are still here."));
     } finally {
       setLoading(false);
     }
   }
+
   if (submitted)
     return (
       <div className="mx-auto max-w-2xl py-5">
@@ -70,189 +85,80 @@ export default function NewComplaint() {
             <Icon name="checkCircle" size={32} />
           </div>
           <p className="eyebrow mt-6">Your concern is on record</p>
-          <h1 className="text-2xl font-semibold tracking-tight text-brand-900">
-            Complaint submitted successfully.
-          </h1>
-          <p className="mt-3 text-sm leading-6 text-slate-500">
-            You can now follow its progress from your workspace.
-          </p>
-          <div className="mt-7 rounded-xl border border-slate-200 bg-slate-50 p-5 text-left">
-            <p className="text-xs text-slate-500">Complaint #{submitted.id}</p>
-            <h2 className="mt-2 text-base font-semibold text-slate-700">
-              {submitted.title}
-            </h2>
-            <div className="mt-4 flex flex-wrap gap-2">
-              <StatusBadge status={submitted.status} />
-              {submitted.category && <Badge>{submitted.category}</Badge>}
-            </div>
+          <h1 className="text-2xl font-semibold tracking-tight text-brand-900">Complaint submitted</h1>
+          <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50 p-5 text-left">
+            <p className="text-xs text-slate-500">Complaint #{submitted.complaint_id} · Ticket {submitted.ticket_no}</p>
+            <p className="mt-2 text-sm font-semibold text-slate-800">{submitted.status_label}</p>
+            <p className="mt-1 text-sm text-slate-600">{submitted.message}</p>
           </div>
+          {submitted.warning && <Alert variant="info" className="mt-4 text-left">{submitted.warning}</Alert>}
           <div className="mt-7 flex flex-wrap justify-center gap-3">
-            <Link
-              to={`/complaints/${submitted.id}`}
-              className="btn btn-primary"
-            >
-              View complaint <Icon name="arrowRight" size={16} />
-            </Link>
-            <Link to="/complaints" className="btn btn-secondary">
-              Back to overview
-            </Link>
+            <Link className="btn btn-primary" to={`/complaints/${submitted.complaint_id}`}>Track this complaint</Link>
+            <Link className="btn btn-secondary" to="/complaints">All my complaints</Link>
           </div>
         </Card>
       </div>
     );
+
   return (
-    <div className="page-stack">
-      <PageHeader
-        eyebrow="Make a difference"
-        title="Let’s get it resolved."
-        description="Tell us what needs attention. Clear details help your concern reach the right team."
-      />
-      <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1.6fr)_minmax(260px,1fr)]">
-        <Card>
-          <div className="panel-heading">
-            <div>
-              <h2>Complaint details</h2>
-              <p>All fields are required.</p>
-            </div>
-            <Icon name="file" size={19} className="text-brand-500" />
+    <div className="page-stack mx-auto max-w-3xl">
+      <PageHeader eyebrow="New complaint" title="Tell us what needs fixing" description="Choose the exact place and item so similar reports are grouped into one ticket." />
+      <Card className="p-6">
+        <form onSubmit={submit} className="space-y-5" noValidate>
+          {(departments.error || categories.error) && (
+            <Alert variant="error">
+              Couldn’t load all department and category options.{" "}
+              <button type="button" className="underline" onClick={() => {
+                if (departments.error) departments.refresh();
+                if (categories.error) categories.refresh();
+              }}>Try again</button>
+            </Alert>
+          )}
+          {error && (
+            <Alert variant="error">
+              {error}{" "}
+              {existingId && <Link className="underline" to={`/complaints/${existingId}`}>View your existing complaint</Link>}
+            </Alert>
+          )}
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Department" htmlFor="departmentId" hint="Choose “Not sure” and we will route it for you.">
+              <select id="departmentId" className="input" value={form.departmentId}
+                onChange={(e) => setForm((c) => ({ ...c, departmentId: e.target.value, categoryId: "", assetId: null }))}>
+                <option value="">Not sure</option>
+                {(departments.data || []).map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Category" htmlFor="categoryId">
+              <select id="categoryId" className="input" value={form.categoryId} onChange={(e) => update("categoryId", e.target.value)}>
+                <option value="">Not sure</option>
+                {visibleCategories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </Field>
           </div>
-          <form onSubmit={submit} className="space-y-6 p-5 sm:p-7">
-            <Field
-              label="What’s the concern?"
-              htmlFor="title"
-              hint={`${form.title.length}/200 characters · A short, specific title works best.`}
-              error={errors.title}
-            >
-              <input
-                id="title"
-                name="title"
-                className="input"
-                placeholder="e.g. Water supply interrupted in Block B"
-                required
-                minLength={3}
-                maxLength={200}
-                value={form.title}
-                onChange={(event) => update("title", event.target.value)}
-                aria-invalid={Boolean(errors.title)}
-                aria-describedby={`title-hint${errors.title ? " title-error" : ""}`}
-                disabled={loading}
-              />
-            </Field>
-            <Field
-              label="Tell us more"
-              htmlFor="description"
-              hint={`${form.description.length.toLocaleString()}/10,000 characters · Include the location, timing, and impact.`}
-              error={errors.description}
-            >
-              <textarea
-                id="description"
-                name="description"
-                className="input min-h-44"
-                rows={7}
-                placeholder="Describe what happened, where it happened, and how it is affecting you…"
-                required
-                minLength={10}
-                maxLength={10000}
-                value={form.description}
-                onChange={(event) => update("description", event.target.value)}
-                aria-invalid={Boolean(errors.description)}
-                aria-describedby={`description-hint${errors.description ? " description-error" : ""}`}
-                disabled={loading}
-              />
-            </Field>
-            <Field
-              label="How many people are affected?"
-              htmlFor="people"
-              hint="Include yourself. Your best estimate helps us understand the impact."
-              error={errors.people}
-            >
-              <input
-                id="people"
-                name="people"
-                type="number"
-                inputMode="numeric"
-                className="input max-w-40"
-                min={1}
-                max={1000000}
-                step={1}
-                required
-                value={form.people}
-                onChange={(event) => update("people", event.target.value)}
-                aria-invalid={Boolean(errors.people)}
-                aria-describedby={`people-hint${errors.people ? " people-error" : ""}`}
-                disabled={loading}
-              />
-            </Field>
-            {error && <Alert variant="error">{error}</Alert>}
-            {loading && (
-              <Alert>
-                We’re submitting and analyzing your concern. This may take a
-                moment; keep this page open.
-              </Alert>
-            )}
-            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-5">
-              <Link
-                to="/complaints"
-                className={`btn btn-ghost ${loading ? "pointer-events-none opacity-50" : ""}`}
-                aria-disabled={loading}
-                tabIndex={loading ? -1 : undefined}
-              >
-                Cancel
-              </Link>
-              <Button type="submit" loading={loading}>
-                {loading ? "Submitting…" : "Submit complaint"}
-                {!loading && <Icon name="arrowRight" size={16} />}
-              </Button>
-            </div>
-          </form>
-        </Card>
-        <aside className="space-y-5">
-          <Card className="border-brand-100 bg-brand-50 p-6">
-            <span className="inline-flex rounded-xl border border-brand-100 bg-white p-2.5 text-brand-600">
-              <Icon name="sparkles" size={22} />
+          <LocationPicker value={form.locationId} onChange={(id) => { update("locationId", id); update("assetId", null); }} error={errors.locationId} />
+          <AssetPicker locationId={form.locationId} departmentId={form.departmentId} value={form.assetId} onChange={(id) => update("assetId", id)} />
+          <Field label="Title" htmlFor="title" error={errors.title}>
+            <input id="title" className="input" maxLength={200} value={form.title} onChange={(e) => update("title", e.target.value)} aria-invalid={Boolean(errors.title)} />
+          </Field>
+          <Field label="Describe the problem" htmlFor="description" error={errors.description}>
+            <textarea id="description" className="input min-h-32" maxLength={4000} value={form.description} onChange={(e) => update("description", e.target.value)} aria-invalid={Boolean(errors.description)} />
+          </Field>
+          <Field label="How many people are affected? (optional)" htmlFor="people" hint="This is only a hint for staff. It does not change the priority.">
+            <input id="people" className="input max-w-40" type="number" min="0" max="100000" inputMode="numeric" value={form.people} onChange={(e) => update("people", e.target.value)} />
+          </Field>
+          <label className="flex items-start gap-3 rounded-xl border border-slate-200 p-4 text-sm">
+            <input type="checkbox" className="mt-1" checked={form.anonymous} onChange={(e) => update("anonymous", e.target.checked)} />
+            <span>
+              <strong>Submit anonymously.</strong> Staff and admins will not see your name. Names, emails, phone and
+              enrollment numbers in your text are removed automatically, but please avoid naming people.
             </span>
-            <h2 className="mt-4 text-base font-semibold text-brand-900">
-              A clearer path to the right team.
-            </h2>
-            <p className="mt-3 text-xs leading-6 text-slate-600">
-              Your complaint is analyzed to help determine its category,
-              priority, and department. Similar reports help identify recurring
-              concerns.
-            </p>
-          </Card>
-          <Card className="p-6">
-            <h2 className="text-sm font-semibold text-slate-700">
-              A helpful report includes
-            </h2>
-            <ul className="mt-4 space-y-4">
-              {[
-                [
-                  "A specific location",
-                  "Building, room, area, or service affected.",
-                ],
-                ["When it started", "Mention dates or how often it happens."],
-                ["The impact", "Explain what you’re unable to do."],
-              ].map(([title, description]) => (
-                <li key={title} className="flex items-start gap-3">
-                  <Icon
-                    name="check"
-                    size={16}
-                    className="mt-0.5 text-brand-500"
-                  />
-                  <div>
-                    <h3 className="text-xs font-medium text-slate-700">
-                      {title}
-                    </h3>
-                    <p className="mt-1 text-xs leading-5 text-slate-500">
-                      {description}
-                    </p>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </Card>
-        </aside>
-      </div>
+          </label>
+          <div className="flex justify-end gap-3">
+            <Link className="btn btn-secondary" to="/complaints">Cancel</Link>
+            <Button type="submit" loading={loading}>Submit complaint</Button>
+          </div>
+        </form>
+      </Card>
     </div>
   );
 }
